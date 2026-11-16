@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Storyboard Studio</title>
+<meta name="theme-color" content="#16161d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand" title="Storyboard Studio">🎬</div>
+  <input id="docTitle" class="title-input" placeholder="Untitled storyboard" aria-label="Storyboard title">
+  <span id="runtime" class="pill" title="Total runtime"></span>
+  <span id="modeBadge" class="pill mode"></span>
+  <span id="saveState" class="pill"></span>
+  <div class="spacer"></div>
+  <div class="seg" role="tablist">
+    <button data-view="board" class="on" title="Board view">Board</button>
+    <button data-view="script" title="Script view (reads as prose)">Script</button>
+  </div>
+  <button id="btnUndo" title="Undo (Ctrl/Cmd+Z)">↶</button>
+  <button id="btnRedo" title="Redo (Ctrl/Cmd+Shift+Z)">↷</button>
+  <button id="btnPlay" class="primary" title="Play animatic (P)">▶ Play</button>
+  <button id="btnSave" title="Save (Ctrl/Cmd+S)">Save</button>
+  <div class="menu-wrap">
+    <button id="btnMenu" title="More">☰</button>
+    <div id="menu" class="menu" hidden>
+      <button data-act="openFolder">📂 Open project folder…</button>
+      <button data-act="openFile">📄 Open storyboard file…</button>
+      <button data-act="new">✨ New storyboard</button>
+      <button data-act="sample">🎞 Load sample</button>
+      <hr>
+      <button data-act="reload">⟳ Reload from disk</button>
+      <button data-act="autolink">🔗 Auto-link media from folder…</button>
+      <button data-act="importText">⬇ Import Mirrage text…</button>
+      <hr>
+      <button data-act="downloadJson">💾 Download storyboard JSON</button>
+      <button data-act="exportMd">📝 Export Markdown (Mirrage format)</button>
+      <button data-act="print">🖨 Print / PDF</button>
+      <hr>
+      <button data-act="settings">⚙ Project settings…</button>
+      <button data-act="help">❓ Help</button>
+    </div>
+  </div>
+</header>
+
+<div id="toolbar">
+  <input id="search" type="search" placeholder="Search pages…" aria-label="Search">
+  <select id="fStatus" aria-label="Filter by status"><option value="">All statuses</option></select>
+  <select id="fChar" aria-label="Filter by character"><option value="">All characters</option></select>
+  <label class="zoom" title="Card size">🔍<input id="zoom" type="range" min="140" max="420" step="10" value="240"></label>
+  <label class="chk" title="Show lyrics and description on cards"><input type="checkbox" id="showText" checked> text</label>
+  <div class="spacer"></div>
+  <button id="btnAddScene">+ Scene</button>
+</div>
+
+<div id="layout">
+  <nav id="sidebar" aria-label="Scenes">
+    <div class="side-head">Scenes <small>(drag to reorder)</small></div>
+    <ol id="sceneList"></ol>
+  </nav>
+  <main id="main">
+    <div id="board"></div>
+    <div id="script" hidden></div>
+    <div id="empty" hidden>
+      <h1>Storyboard Studio</h1>
+      <p>A storyboard you and Mirrage can both edit. It lives as a plain <code>storyboard.json</code> in your Drive project folder.</p>
+      <div class="empty-actions">
+        <button class="primary" data-act="openFolder">📂 Open project folder</button>
+        <button data-act="openFile">📄 Open storyboard file</button>
+        <button data-act="new">✨ New storyboard</button>
+        <button data-act="sample">🎞 Try the sample</button>
+      </div>
+      <p class="muted" id="fsaNote"></p>
+    </div>
+  </main>
+  <aside id="editor" hidden aria-label="Page editor"></aside>
+</div>
+
+<div id="player" hidden>
+  <div class="stage">
+    <img id="plImg" alt="">
+    <video id="plVid" playsinline muted></video>
+    <div id="plBlank"></div>
+    <div id="plCaption"></div>
+    <div id="plInfo"></div>
+  </div>
+  <div class="pl-bar">
+    <button id="plPrev" title="Previous (←)">⏮</button>
+    <button id="plToggle" title="Play/pause (space)">⏸</button>
+    <button id="plNext" title="Next (→)">⏭</button>
+    <div id="plProgress"><div id="plFill"></div><div id="plTicks"></div></div>
+    <span id="plTime">0:00 / 0:00</span>
+    <label class="chk"><input type="checkbox" id="plCaptions" checked> lyrics</label>
+    <label class="chk" title="Play the song from the project audio"><input type="checkbox" id="plSong" checked> song</label>
+    <label class="chk" title="Seek the song to each page's own timecode"><input type="checkbox" id="plSync"> page timecodes</label>
+    <button id="plClose" title="Close (Esc)">✕</button>
+  </div>
+  <audio id="plAudio"></audio>
+</div>
+
+<div id="modal" hidden><div class="modal-card"><div id="modalBody"></div></div></div>
+<div id="toast" hidden></div>
+<div id="dropHint" hidden>Drop image or video on a page</div>
+<div id="print"></div>
+<input type="file" id="fileJson" accept=".json,application/json" hidden>
+<input type="file" id="fileDir" webkitdirectory multiple hidden>
+<input type="file" id="fileMedia" accept="image/*,video/*" hidden>
+
+<script src="vendor/Sortable.min.js"></script>
+<script src="lib.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

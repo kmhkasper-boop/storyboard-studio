@@ -1,0 +1,51 @@
+{
+  "format": "storyboard-studio",
+  "version": 1,
+  "title": "Sample – Paper Moon",
+  "project": "Storyboard Studio sample",
+  "updated": "2026-11-16T18:00:00.000Z",
+  "updatedBy": "Plug-in Baby",
+  "aspect": "16:9",
+  "defaultDuration": 4,
+  "audio": { "path": "audio/sample-song.mp3", "name": "sample-song.mp3" },
+  "characters": [
+    { "id": "saisha", "name": "Saisha", "color": "#ff6b9a" },
+    { "id": "steeve", "name": "Steeve", "color": "#6aa8ff" },
+    { "id": "mr-hat", "name": "Mr Hat", "color": "#ffb84d" }
+  ],
+  "notes": "A made-up example so you can try everything: drag pages, swap images, press Play.",
+  "scenes": [
+    {
+      "id": "s_intro",
+      "title": "Intro – the city wakes up",
+      "color": "#ffb84d",
+      "notes": "Warm, slow, hopeful.",
+      "pages": [
+        { "id": "p_01", "start": "0:00", "end": "0:04", "status": "image", "title": "Dawn", "lyric": "(intro synths)", "description": "Wide shot of the city at dawn; a lone figure on the bridge.", "camera": "extreme wide, slow push-in", "characters": ["saisha"], "image": { "path": "images/page-01.jpg" } },
+        { "id": "p_02", "start": "0:04", "end": "0:08", "status": "image", "title": "Rooftop", "lyric": "Paper moon above the wire", "description": "Night rooftop, the moon looks like it is cut from paper.", "camera": "low angle", "image": { "path": "images/page-02.jpg" } },
+        { "id": "p_03", "start": "0:08", "end": "0:12", "status": "animated", "title": "Paper sky", "lyric": "Fold the sky and pull it higher", "description": "She reaches up and the sky folds like paper.", "camera": "medium, tilt up", "characters": ["saisha"], "image": { "path": "images/page-03.jpg" }, "video": { "path": "clips/clip-03_v2.mp4" },
+          "comments": [ { "id": "c_1", "by": "Mirrage", "at": "2026-11-16T17:40:00Z", "text": "Lucas, keep the fold or switch to a tear like in Bleeding Page?" } ] }
+      ]
+    },
+    {
+      "id": "s_stage",
+      "title": "Stage – the band",
+      "color": "#6aa8ff",
+      "pages": [
+        { "id": "p_04", "start": "0:12", "end": "0:16", "status": "image", "title": "Lights", "lyric": "Every light is on for you", "description": "Band on stage, beams cut through the haze. Mr Hat on the right.", "camera": "wide, handheld", "characters": ["steeve", "mr-hat"], "image": { "path": "images/page-04.jpg" }, "flag": "drink on stage – Lucas to OK" },
+        { "id": "p_05", "start": "0:16", "end": "0:20", "status": "animated", "title": "Tram stop", "lyric": "Waiting for the night tram", "description": "Two figures at the tram stop, one walks off.", "camera": "medium two-shot", "characters": ["saisha", "steeve"], "image": { "path": "images/page-05.jpg" }, "video": { "path": "clips/clip-05_v2.mp4" } },
+        { "id": "p_06", "start": "0:20", "end": "0:24", "status": "image", "title": "Moon", "lyric": "(instrumental)", "description": "The paper moon alone in a dark sky.", "camera": "locked-off", "image": { "path": "images/page-06.jpg" } }
+      ]
+    },
+    {
+      "id": "s_end",
+      "title": "Ending – sunrise",
+      "color": "#4fd18b",
+      "pages": [
+        { "id": "p_07", "start": "0:24", "end": "0:28", "status": "image", "title": "Road", "lyric": "Walk it home", "description": "Desert road leading to the horizon.", "camera": "wide, centered", "characters": ["saisha"], "image": { "path": "images/page-07.jpg" } },
+        { "id": "p_08", "start": "0:28", "end": "0:32", "status": "final", "title": "Sunrise", "lyric": "And the moon goes back to paper", "description": "Everyone together on the skyline as the sun comes up.", "camera": "wide, slow crane up", "characters": ["saisha", "steeve", "mr-hat"], "image": { "path": "images/page-08.jpg" } },
+        { "id": "p_09", "start": "0:32", "end": "0:36", "status": "idea", "title": "Post-credits", "description": "Mr Hat picks up the paper moon from the ground and pockets it.", "notes": "Idea only, no image yet.", "characters": ["mr-hat"] }
+      ]
+    }
+  ]
+}
