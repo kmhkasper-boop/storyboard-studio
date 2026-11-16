@@ -83,7 +83,12 @@
     for (const s of doc.scenes) { const i = s.pages.findIndex(p => p.id === id); if (i >= 0) return { scene: s, page: s.pages[i], index: i }; }
     return null;
   }
-  function pageNumber(id) { return allPages().findIndex(p => p.id === id) + 1; }
+  const activePages = () => S.activePages(doc);
+  /** Page label: active pages 1…N, inactive alternatives "5·alt" / "alt" */
+  function pageNumber(id) { return S.pageLabels(doc).get(id) || '?'; }
+  const sceneOf = (id) => doc.scenes.find(x => x.id === id);
+  const fmtDiff = (x) => (Math.abs(x) < 0.05 ? '±0:00' : (x > 0 ? '+' : '−') + S.fmtTime(Math.abs(x)));
+  const peek = new Set(); // inactive scene alternatives the user expanded
   const dur = (p) => S.pageDuration(p, doc);
   /** Attaching media moves a page up the ladder: image -> rendered, video -> picked (never down). */
   function bumpStatus(pg, type) { const rank = (x) => S.STATUS_IDS.indexOf(x); const want = type === 'video' ? 'picked' : 'rendered'; if (pg.status !== 'cut' && rank(pg.status) < rank(want)) pg.status = want; }
@@ -99,6 +104,7 @@
     }
     lastKey = key || null; lastKeyTime = now;
     fn(doc);
+    S.regroup(doc);
     markDirty();
     if (opts.render !== false) render();
   }
@@ -167,8 +173,11 @@
     if (m.driveId) return { src: driveThumb(m.driveId), kind: 'drive', playable: false };
     return null;
   }
+  /** v3: a media object with a Drive ID but no relative path is valid: "online only" (Drive thumbnail + ↗ Drive). */
+  const onlineOnly = (m) => !!(m && m.driveId && !m.path && !m.url);
   function mediaLabel(m) {
     if (!m) return 'none';
+    if (onlineOnly(m)) return '☁ online only · Drive ' + m.driveId.slice(0, 10) + '…';
     const bits = [];
     if (m.path) bits.push((local.kind ? (localEntry(m.path) ? '✓ ' : '✗ not in folder: ') : '') + m.path);
     if (m.driveId) bits.push('Drive ' + m.driveId.slice(0, 10) + '…');
@@ -215,7 +224,7 @@
     document.documentElement.style.setProperty('--card', prefs.zoom + 'px');
     const [aw, ah] = doc.aspect.split(':'); document.documentElement.style.setProperty('--aspect', aw + '/' + ah);
     if (document.activeElement !== $('#docTitle')) $('#docTitle').value = doc.title;
-    renderFilters(); renderHeader(); renderSidebar();
+    renderFilters(); renderHeader(); renderSidebar(); renderVariantBar();
     if (view === 'board') renderBoard(); else renderScript();
     renderEditor(); updateSaveState();
   }
@@ -229,9 +238,9 @@
     b.title = local.kind === 'files' ? 'This browser cannot write into folders. Save downloads the storyboard file; put it back in the folder.' : '';
   }
   function renderHeader() {
-    const tl = S.timeline(doc); const n = allPages().length;
+    const tl = S.timeline(doc); const ap = activePages(); const n = ap.filter(p => p.status !== 'cut').length; const nc = ap.length - n; const na = allPages().length - ap.length;
     $('#runtime').textContent = n + ' pages · ' + S.fmtTime(tl.screen);
-    $('#runtime').title = 'Total screen time (cut pages excluded)';
+    $('#runtime').title = 'Total screen time of the active cut' + (nc ? '. ' + nc + ' page(s) with status "cut" are not counted (their song time shows as a gap)' : '') + (na ? '. ' + na + ' page(s) in inactive alternatives are not counted' : '');
     const sp = $('#songSpan');
     sp.textContent = tl.songSpan !== null ? '♪ song ' + S.fmtTime(tl.songStart) + '–' + S.fmtTime(tl.songEnd) + ' (' + S.fmtTime(tl.songSpan) + ')' : '';
     sp.title = 'Song span covered by page timecodes';
@@ -258,15 +267,18 @@
   }
   function renderSidebar() {
     const ol = $('#sceneList'); ol.innerHTML = '';
-    doc.scenes.forEach(s => {
-      const t = s.pages.reduce((a, p) => a + (p.status === 'cut' ? 0 : dur(p)), 0);
-      ol.append(el('li', { dataset: { id: s.id }, onclick: () => { const n = document.getElementById('scene-' + s.id); if (n) n.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
-        el('span', { class: 'sw', style: { background: s.color } }), el('span', { class: 'nm' }, s.title), el('span', { class: 'ct' }, s.pages.length + ' · ' + S.fmtTime(t))));
-    });
+    for (const it of S.sceneItems(doc)) {
+      const act = it.scenes.find(x => x.active !== false) || it.scenes[0];
+      const t = act.pages.reduce((a, p) => a + (p.status === 'cut' || p.active === false ? 0 : dur(p)), 0);
+      const alt = it.scenes.length > 1;
+      ol.append(el('li', { dataset: { id: act.id, ids: it.scenes.map(x => x.id).join(',') }, class: alt ? 'slot' : '', title: alt ? 'Alternatives: ' + it.scenes.map(x => (x.altLabel || x.title) + (x.active !== false ? ' (active)' : '')).join(' / ') : '', onclick: () => { const n = document.getElementById('scene-' + act.id); if (n) n.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
+        el('span', { class: 'sw', style: { background: act.color } }), el('span', { class: 'nm' }, (alt ? '⇄ ' : '') + act.title), el('span', { class: 'ct' }, (alt ? it.scenes.length + ' alts · ' : '') + act.pages.filter(p => p.active !== false).length + ' · ' + S.fmtTime(t))));
+    }
   }
   function cardEl(p, num) {
     const thumb = el('div', { class: 'thumb' }, el('span', { class: 'num' }, String(num) + (p.code && p.code !== S.pad2(num) && p.code !== String(num) ? ' · ' + p.code : '')));
     if (p.video) thumb.append(el('span', { class: 'badge-vid', title: 'Has video: ' + mediaLabel(p.video) }, '🎞'));
+    if ([p.image, p.video].some(onlineOnly) && ![p.image, p.video].some(m => m && !onlineOnly(m))) thumb.append(el('span', { class: 'badge-online', title: 'Online only: linked by Drive ID, no file path. Shows the Drive thumbnail; use ↗ Drive to open it.' }, '☁ online'));
     const open = p.comments.filter(c => !c.done).length;
     if (open) thumb.append(el('span', { class: 'badge-cm', title: open + ' open comment(s)' }, '💬 ' + open));
     if (p.flag) thumb.append(el('span', { class: 'flag', title: p.flag }, '⚑ ' + p.flag.slice(0, 18)));
@@ -278,12 +290,12 @@
       p.effect ? el('span', { class: 'chip spd', title: 'Effect' }, '✦ ' + p.effect) : null,
       p.cuts.length ? el('span', { class: 'chip', title: 'Cut sequence' }, '✂ ' + p.cuts.length + ' cuts') : null,
       p.video && (p.video.in !== undefined || p.video.out !== undefined) ? el('span', { class: 'chip', title: 'Source in/out' }, '⇤⇥ ' + (p.video.in ?? 0) + '–' + (p.video.out ?? 'end') + 's') : null,
-      warn ? el('span', { class: 'chip warn', title: warn }, '⏱ ' + S.promptSeconds(p.videoPrompt) + 's prompt') : null,
+      warn ? el('span', { class: 'chip warn', title: warn }, '⏱ gen ' + p.genSeconds + 's too short') : null,
       gi.gap ? el('span', { class: 'gapchip', title: 'Song-time gap before this page' }, '⚠ gap ' + S.fmtTime(gi.gap.from, true) + '→' + S.fmtTime(gi.gap.to, true)) : null,
       gi.overlap ? el('span', { class: 'gapchip', title: 'Overlaps the previous linear page' }, '⚠ overlap ' + (Math.round(gi.overlap.seconds * 10) / 10) + 's') : null
     ].filter(Boolean);
     const tc = [p.start, p.end].filter(Boolean).join('–');
-    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out') + (p.role ? ' r-' + p.role : ''), dataset: { id: p.id }, tabindex: 0 },
+    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out') + (p.role ? ' r-' + p.role : '') + (p.active === false ? ' alt-off' : ''), dataset: { id: p.id }, tabindex: 0 },
       thumb,
       el('div', { class: 'body' },
         el('div', { class: 'row1' }, el('span', { class: 'st st-' + p.status, title: p.status }), tc ? el('span', { class: 'tc' }, tc) : null, el('span', { class: 'dur' }, (Math.round(dur(p) * 10) / 10) + 's')),
@@ -301,45 +313,88 @@
   function updateCard(id) {
     const old = document.querySelector('.card[data-id="' + CSS.escape(id) + '"]');
     if (!old) return;
-    old.replaceWith(cardEl(findPage(id).page, pageNumber(id)));
+    const nc = cardEl(findPage(id).page, pageNumber(id)); const tabs = old.querySelector('.alt-tabs'); if (tabs) nc.prepend(tabs); old.replaceWith(nc);
   }
   function renderBoard() {
-    sortables.splice(0).forEach(s => s.destroy());
+    sortables.splice(0).forEach(x => x.destroy());
     const board = $('#board'); const scrollTop = $('#main').scrollTop;
     board.innerHTML = ''; board.classList.toggle('hide-text', !prefs.showText);
-    let n = 0;
-    doc.scenes.forEach((s, si) => {
+    const labels = S.pageLabels(doc); const items = S.sceneItems(doc); const baseScreen = S.timeline(doc).screen;
+    const sceneSection = (s, si, inGroup) => {
       const grid = el('div', { class: 'grid', dataset: { scene: s.id } });
-      s.pages.forEach(p => grid.append(cardEl(p, ++n)));
+      for (const it of S.pageItems(s)) {
+        if (it.pages.length === 1) { grid.append(cardEl(it.root, labels.get(it.root.id))); continue; }
+        // page alternatives: one stacked item with tabs; the active card first, inactive ones dimmed after it
+        const act = it.pages.find(p => p.active !== false) || it.root;
+        const tabs = el('div', { class: 'alt-tabs', title: 'Alternative shots: click to make one active' }, it.pages.map((p, k) => {
+          const diff = s.active !== false ? S.timeline(S.setActivePage(JSON.parse(JSON.stringify(doc)), p.id)).screen - baseScreen : 0;
+          return el('button', { class: 'alt-tab' + (p.active !== false ? ' on' : ''), dataset: { id: p.id }, title: (p.title || '') + (p.active !== false ? ' (active)' : ' · ' + fmtDiff(diff) + ' runtime'), onclick: (e) => { e.stopPropagation(); if (p.active === false) setActivePageUI(p.id); } }, (p.altLabel || String.fromCharCode(65 + k)) + (p.active === false && Math.abs(diff) >= 0.05 ? ' ' + fmtDiff(diff) : ''));
+        }));
+        const g = el('div', { class: 'pgroup', dataset: { root: it.root.id } }, tabs, cardEl(act, labels.get(act.id)), it.pages.filter(p => p !== act).map(p => cardEl(p, labels.get(p.id))));
+        grid.append(g);
+      }
       grid.append(el('button', { class: 'add-card', title: 'Add a page to this scene', onclick: () => addPage(s.id) }, '+ Page'));
-      const t = s.pages.reduce((a, p) => a + (p.status === 'cut' ? 0 : dur(p)), 0);
+      const t = s.pages.reduce((a, p) => a + (p.status === 'cut' || p.active === false ? 0 : dur(p)), 0);
       const title = el('input', { class: 'sc-title', value: s.title, 'aria-label': 'Scene title' });
       title.addEventListener('input', () => mutate(d => { d.scenes.find(x => x.id === s.id).title = title.value; }, 'scene-title:' + s.id, { render: false }));
       title.addEventListener('change', () => renderSidebar());
       const color = el('input', { type: 'color', value: s.color, title: 'Scene colour', style: { width: '28px', height: '24px', padding: '0', border: '0', background: 'none' } });
       color.addEventListener('change', () => mutate(d => { d.scenes.find(x => x.id === s.id).color = color.value; }));
-      const sec = el('section', { class: 'scene' + (s.collapsed ? ' collapsed' : ''), id: 'scene-' + s.id, dataset: { id: s.id }, style: { '--sc': s.color } },
+      const off = s.active === false; const hideBody = s.collapsed || (off && !peek.has(s.id));
+      const sec = el('section', { class: 'scene' + (hideBody ? ' collapsed' : '') + (off ? ' alt-off' : '') + (inGroup ? ' in-slot' : ' bitem'), id: 'scene-' + s.id, dataset: { id: s.id, ids: s.id }, style: { '--sc': s.color } },
         el('div', { class: 'scene-head' },
-          el('span', { class: 'grip', title: 'Drag to reorder scenes' }, '⠿'), color, title,
-          el('span', { class: 'meta' }, s.pages.length + ' pages · ' + S.fmtTime(t)),
+          inGroup ? null : el('span', { class: 'grip', title: 'Drag to reorder scenes' }, '⠿'), color, title,
+          el('span', { class: 'meta' }, s.pages.length + ' pages · ' + S.fmtTime(t) + (off ? ' · inactive alternative' : '')),
           el('div', { class: 'tools' },
-            el('button', { title: 'Collapse/expand', onclick: () => mutate(d => { const x = d.scenes.find(x => x.id === s.id); x.collapsed = !x.collapsed; }) }, s.collapsed ? '▸' : '▾'),
-            el('button', { title: 'Move scene up', class: 'sc-up', disabled: si === 0, onclick: () => moveScene(s.id, -1) }, '↑'),
-            el('button', { title: 'Move scene down', class: 'sc-down', disabled: si === doc.scenes.length - 1, onclick: () => moveScene(s.id, 1) }, '↓'),
+            off ? el('button', { class: 'sc-peek', title: 'Show or hide this alternative', onclick: () => { peek.has(s.id) ? peek.delete(s.id) : peek.add(s.id); renderBoard(); } }, peek.has(s.id) ? 'hide' : 'show') : el('button', { title: 'Collapse/expand', onclick: () => mutate(d => { const x = d.scenes.find(x => x.id === s.id); x.collapsed = !x.collapsed; }) }, s.collapsed ? '▸' : '▾'),
+            el('button', { title: 'Move scene up (with its alternatives)', class: 'sc-up', disabled: si === 0, onclick: () => moveScene(s.id, -1) }, '↑'),
+            el('button', { title: 'Move scene down (with its alternatives)', class: 'sc-down', disabled: si === items.length - 1, onclick: () => moveScene(s.id, 1) }, '↓'),
             el('button', { title: 'Scene notes', onclick: () => editSceneNotes(s.id) }, '✎ notes'),
+            el('button', { title: 'Add an alternative of this scene (duplicate as an inactive alternative)', class: 'sc-alt', onclick: () => addSceneAltUI(s.id) }, '⇄ Alt'),
             el('button', { title: 'Duplicate scene', onclick: () => duplicateScene(s.id) }, '⧉'),
             el('button', { title: 'Delete scene', class: 'danger', onclick: () => deleteScene(s.id) }, '🗑'))),
         s.notes ? el('div', { class: 'muted', style: { margin: '-2px 0 8px 30px', fontSize: '12.5px', whiteSpace: 'pre-wrap' } }, s.notes) : null,
         grid);
-      board.append(sec);
       sortables.push(Sortable.create(grid, {
-        group: 'pages', draggable: '.card', filter: '.add-card', preventOnFilter: false, animation: 150, delayOnTouchOnly: true, delay: 180,
+        group: 'pages', draggable: '.grid > .card, .grid > .pgroup', filter: '.add-card, .alt-tab', preventOnFilter: false, animation: 150, delayOnTouchOnly: true, delay: 180,
         ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen', onEnd: syncPagesFromDom
       }));
+      return sec;
+    };
+    items.forEach((it, si) => {
+      if (it.scenes.length === 1) { board.append(sceneSection(it.scenes[0], si, false)); return; }
+      const act = it.scenes.find(x => x.active !== false) || it.scenes[0];
+      const tabs = it.scenes.map(x => {
+        const diff = S.timeline(S.setActiveScene(JSON.parse(JSON.stringify(doc)), x.id)).screen - baseScreen;
+        return el('button', { class: 'slot-tab' + (x.active !== false ? ' on' : ''), dataset: { id: x.id }, title: x.title + (x.active !== false ? ' (active)' : ' · makes the runtime ' + fmtDiff(diff)), onclick: () => { if (x.active === false) setActiveSceneUI(x.id); } },
+          x.altLabel || x.title, x.active === false ? el('span', { class: 'diff' }, ' ' + fmtDiff(diff)) : el('span', { class: 'diff' }, ' ●'));
+      });
+      const grp = el('div', { class: 'slot-group bitem', dataset: { id: act.id, ids: it.scenes.map(x => x.id).join(','), slot: it.slot }, style: { '--sc': act.color } },
+        el('div', { class: 'slot-head' }, el('span', { class: 'grip', title: 'Drag to move this slot with all its alternatives' }, '⠿'), el('span', { class: 'slot-name', title: 'Alternatives for one spot in the video. Only the active one plays and counts.' }, '⇄ Slot'), tabs,
+          el('button', { class: 'slot-rename', title: 'Rename the alternative labels', onclick: () => renameSlotLabels(it.slot) }, '✎')),
+        it.scenes.map(x => sceneSection(x, si, true)));
+      board.append(grp);
     });
-    sortables.push(Sortable.create(board, { handle: '.grip', draggable: '.scene', animation: 150, onEnd: () => syncScenesFromDom($$('#board > .scene').map(n => n.dataset.id)) }));
-    sortables.push(Sortable.create($('#sceneList'), { animation: 150, delayOnTouchOnly: true, delay: 180, onEnd: () => syncScenesFromDom($$('#sceneList li').map(n => n.dataset.id)) }));
+    sortables.push(Sortable.create(board, { handle: '.grip', draggable: '.bitem', animation: 150, onEnd: () => syncScenesFromDom($$('#board > .bitem').flatMap(n => n.dataset.ids.split(','))) }));
+    sortables.push(Sortable.create($('#sceneList'), { animation: 150, delayOnTouchOnly: true, delay: 180, onEnd: () => syncScenesFromDom($$('#sceneList li').flatMap(n => n.dataset.ids.split(','))) }));
     $('#main').scrollTop = scrollTop;
+  }
+  function setActiveSceneUI(id) {
+    const before = S.timeline(doc).screen; mutate(d => { S.setActiveScene(d, id); });
+    const after = S.timeline(doc).screen; const s = sceneOf(id);
+    toast('Active: ' + (s.altLabel || s.title) + ' · runtime ' + S.fmtTime(after) + ' (' + fmtDiff(after - before) + ')', 2600);
+  }
+  function setActivePageUI(id) {
+    const before = S.timeline(doc).screen; mutate(d => { S.setActivePage(d, id); });
+    const after = S.timeline(doc).screen; const f = findPage(id);
+    toast('Active shot: ' + (f.page.altLabel || f.page.title || id) + ' · runtime ' + S.fmtTime(after) + ' (' + fmtDiff(after - before) + ')', 2600);
+  }
+  function addSceneAltUI(id) { let nid = null; mutate(d => { nid = S.addSceneAlternative(d, id); }); peek.add(nid); renderBoard(); toast('Added an inactive alternative. Click its tab to make it active.', 3500); }
+  function addPageAltUI(id) { let nid = null; mutate(d => { nid = S.addPageAlternative(d, id); }); select(nid); toast('Added an inactive alternative shot. Its tab on the card makes it active.', 3500); }
+  async function renameSlotLabels(slot) {
+    const sc = doc.scenes.filter(x => x.slot === slot);
+    const r = await promptModal('Alternative labels', sc.map(x => ({ key: x.id, label: x.title, value: x.altLabel || x.title })), 'Save');
+    if (r) mutate(d => { for (const x of d.scenes) if (x.slot === slot && r[x.id] !== undefined) x.altLabel = r[x.id].trim(); });
   }
   function syncPagesFromDom() {
     const map = new Map(allPages().map(p => [p.id, p]));
@@ -351,14 +406,14 @@
   }
   function syncScenesFromDom(ids) {
     if (ids.join() === doc.scenes.map(s => s.id).join()) return render();
-    mutate(d => { const m = new Map(d.scenes.map(s => [s.id, s])); d.scenes = ids.map(id => m.get(id)); });
+    mutate(d => { const m = new Map(d.scenes.map(s => [s.id, s])); d.scenes = ids.map(id => m.get(id)).filter(Boolean); for (const x of d.scenes) m.delete(x.id); d.scenes.push(...m.values()); });
   }
   function renderScript() {
     const box = $('#script'); box.innerHTML = '';
     box.append(el('h1', null, doc.title), doc.project ? el('p', { class: 'muted' }, doc.project) : '', doc.notes ? el('p', { class: 'notes' }, doc.notes) : '');
-    let n = 0, t = 0;
-    doc.scenes.forEach((s, si) => {
-      box.append(el('h2', null, (si + 1) + '. ' + s.title), s.notes ? el('p', { class: 'notes' }, s.notes) : '');
+    let n = 0, t = 0; const ad = S.activeDoc(doc); const hiddenAlts = allPages().length - S.allPages(ad).length;
+    ad.scenes.forEach((s, si) => {
+      box.append(el('h2', null, (si + 1) + '. ' + s.title + (s.slot && s.altLabel ? ' [' + s.altLabel + ']' : '')), s.notes ? el('p', { class: 'notes' }, s.notes) : '');
       s.pages.forEach(p => {
         n++;
         const d = dur(p); const at = t; if (p.status !== 'cut') t += d;
@@ -374,7 +429,7 @@
         box.append(sp);
       });
     });
-    box.append(el('p', { class: 'muted' }, n + ' pages · ' + S.fmtTime(t)));
+    box.append(el('p', { class: 'muted' }, n + ' pages · ' + S.fmtTime(t) + (hiddenAlts ? ' · ' + hiddenAlts + ' page(s) in inactive alternatives not shown' : '')));
   }
 
   // ---------- editor ----------
@@ -390,7 +445,7 @@
     if (!f) { ed.hidden = true; ed.innerHTML = ''; return; }
     const { page: p, scene } = f; const num = pageNumber(p.id);
     const keepScroll = ed.scrollTop; ed.hidden = false; ed.innerHTML = '';
-    const total = allPages().length;
+    const total = activePages().length; const all = allPages(); const ix = all.findIndex(x => x.id === p.id);
     const field = (key, label, opts = {}) => {
       const inp = opts.multiline ? el('textarea', { rows: opts.rows || 3, placeholder: opts.placeholder || '' }) : el('input', Object.assign({ placeholder: opts.placeholder || '' }, opts.list ? { list: opts.list } : {}));
       inp.value = p[key] == null ? '' : p[key]; inp.dataset.field = key;
@@ -405,7 +460,7 @@
     const sceneSel = el('select', { title: 'Move to scene', 'data-field': 'scene' }, doc.scenes.map(s => el('option', { value: s.id }, s.title))); sceneSel.value = scene.id;
     sceneSel.addEventListener('change', () => movePageToScene(p.id, sceneSel.value));
     ed.classList.toggle('drawer', drawer);
-    const tabs = [['page', 'Page'], ['prompts', 'Prompts'], ['cast', 'Cast' + (p.characters.length ? ' ' + p.characters.length : '')], ['takes', 'Takes' + (p.takes.length ? ' ' + p.takes.length : '')], ['log', 'Log' + (p.genLog.length ? ' ' + p.genLog.length : '')]];
+    const tabs = [['page', 'Page'], ['cuts', 'Cuts' + (p.cuts.length ? ' ' + p.cuts.length : '')], ['prompts', 'Prompts'], ['cast', 'Cast' + (p.characters.length ? ' ' + p.characters.length : '')], ['takes', 'Takes' + (p.takes.length ? ' ' + p.takes.length : '')], ['log', 'Log' + (p.genLog.length ? ' ' + p.genLog.length : '')]];
     const copyBtn = (key) => el('button', { class: 'copy-btn', title: 'Copy to clipboard', onclick: (e) => { e.preventDefault(); copyText(findPage(p.id).page[key] || '', 'Prompt copied'); } }, '⧉ copy');
     const promptBlock = (key, toolKey, label, ph) => el('div', { class: 'pblock' },
       field(key, label, { multiline: true, rows: 4, placeholder: ph, extra: copyBtn(key) }),
@@ -413,12 +468,13 @@
     const autoLyr = !p.lyrics ? S.lyricsFor(p, doc) : '';
     const body = {
       page: () => [
-        editorWarnings(p),
+        editorWarnings(p), altStrip(p, scene),
         el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Status'), statusSel), el('div', { class: 'fld' }, el('label', null, 'Scene'), sceneSel)),
         el('div', { class: 'row' }, roleSel(p), speedField(p), retimeSel(p)),
         field('effect', 'Effect', { placeholder: 'e.g. flicker, strobe' }),
-        mediaSlot(p, 'image'), mediaSlot(p, 'video'), cutsBox(p),
-        el('div', { class: 'row' }, field('start', 'Start (song time)', { placeholder: '1:57' }), field('end', 'End', { placeholder: '2:03' }), field('duration', 'Duration (s)', { number: true, placeholder: 'auto ' + (Math.round(dur(p) * 10) / 10) })),
+        mediaSlot(p, 'image'), mediaSlot(p, 'video'),
+        el('div', { class: 'cuts-sum muted' }, p.cuts.length ? '✂ ' + p.cuts.length + ' cuts · ' : 'No cut burst. ', el('button', { class: 'copy-btn go-cuts', onclick: () => { edTab = 'cuts'; renderEditor(); } }, p.cuts.length ? 'edit cuts →' : 'make one →')),
+        el('div', { class: 'row' }, field('start', 'Start (song time)', { placeholder: '1:57' }), field('end', 'End', { placeholder: '2:03' }), field('duration', 'Duration (s)', { number: true, placeholder: 'auto ' + (Math.round(dur(p) * 10) / 10) }), field('genSeconds', 'Gen length (s)', { number: true, placeholder: 'e.g. 6' })),
         el('div', { class: 'row' }, field('title', 'Short title', { placeholder: 'e.g. First breath' }), field('code', 'Code / old page no.', { placeholder: 'e.g. 03' })),
         field('lyrics', 'Lyrics / dialogue', { multiline: true, rows: 2, placeholder: autoLyr ? '♪ from the song: ' + autoLyr : '',
           extra: autoLyr ? el('button', { class: 'copy-btn lyr-fill', title: 'Copy the song lyrics for this time range into the page', onclick: (e) => { e.preventDefault(); mutate(() => { findPage(p.id).page.lyrics = autoLyr; }); } }, '♪ fill from song') : null }),
@@ -431,18 +487,20 @@
       prompts: () => [
         promptBlock('imagePrompt', 'imageTool', 'Image prompt', 'Still image prompt'),
         promptBlock('videoPrompt', 'videoTool', 'Video prompt (image-to-video)', '(6 s, image-to-video) …'),
+        el('div', { class: 'row' }, field('genSeconds', 'Generation length (s) — checked against page length, speed and source in/out', { number: true, placeholder: 'e.g. 6' })),
         promptBlock('negativePrompt', 'negativeTool', 'Negative prompt', 'what to avoid'),
         p.characters.length ? el('div', { class: 'muted', style: { fontSize: '12px' } }, 'Character blocks (canon + look + refs) are on the Cast tab.') : null],
       cast: () => castTab(p, scene),
+      cuts: () => cutsTab(p),
       takes: () => takesTab(p),
       log: () => logTab(p)
     };
     if (!body[edTab]) edTab = 'page';
     ed.append(
       el('div', { class: 'ed-head' },
-        el('button', { title: 'Previous page', disabled: num <= 1, onclick: () => select(allPages()[num - 2].id) }, '‹'),
+        el('button', { title: 'Previous page', disabled: ix <= 0, onclick: () => select(all[ix - 1].id) }, '‹'),
         el('h2', null, 'Page ' + num + ' / ' + total),
-        el('button', { title: 'Next page', disabled: num >= total, onclick: () => select(allPages()[num].id) }, '›'),
+        el('button', { title: 'Next page', disabled: ix >= all.length - 1, onclick: () => select(all[ix + 1].id) }, '›'),
         el('button', { title: drawer ? 'Narrow editor' : 'Open the large breakout drawer (or double-click a page)', class: 'ed-drawer', onclick: () => { drawer = !drawer; renderEditor(); } }, drawer ? '⇥' : '⤢'),
         el('button', { title: 'Close', class: 'ed-close', onclick: () => select(null) }, '✕')),
       el('div', { class: 'ed-tools' },
@@ -450,6 +508,7 @@
         el('button', { class: 'ed-down', onclick: () => movePage(p.id, 1), title: 'Move later' }, '↓ Later'),
         el('button', { onclick: () => addPage(scene.id, p.id), title: 'Insert a new page after this one' }, '+ After'),
         el('button', { class: 'ed-dup', onclick: () => duplicatePage(p.id) }, '⧉ Duplicate'),
+        el('button', { class: 'ed-alt', title: 'Add an alternative shot of this page (inactive until you pick it)', onclick: () => addPageAltUI(p.id) }, '⇄ Alternative'),
         el('button', { onclick: () => play(p.id) }, '▶ From here'),
         el('button', { class: 'danger ed-del', onclick: () => deletePage(p.id) }, '🗑 Delete')),
       el('div', { class: 'ed-tabs', role: 'tablist' }, tabs.map(([id, label]) => el('button', { class: 'tab-' + id + (edTab === id ? ' on' : ''), onclick: () => { edTab = id; renderEditor(); } }, label))),
@@ -789,6 +848,131 @@
     else if (kind === 'edl') downloadBlob(S.toCMX3600(doc), 'text/plain', base + '.edl');
     else downloadBlob(S.toEDLText(doc), 'text/plain', base + '-edit-list.txt');
   }
+
+  // ---------- v3: alternatives strip, cut timeline, edit-list import, variants ----------
+  function altStrip(p, scene) {
+    const grp = scene.pages.filter(q => q.id === (p.altOf || p.id) || q.altOf === (p.altOf || p.id));
+    const out = [];
+    if (scene.slot) out.push(el('div', { class: 'muted alt-scene' }, '⇄ Scene "' + scene.title + '" is ' + (scene.active === false ? 'an inactive' : 'the active') + ' alternative' + (scene.altLabel ? ' (' + scene.altLabel + ')' : '') + ' of its slot.',
+      scene.active === false ? el('button', { class: 'copy-btn', onclick: () => setActiveSceneUI(scene.id) }, 'make active') : null));
+    if (grp.length > 1) {
+      const lab = el('input', { class: 'alt-label', value: p.altLabel || '', placeholder: 'label, e.g. B close-up', style: { width: '150px' } });
+      lab.addEventListener('input', () => mutate(() => { findPage(p.id).page.altLabel = lab.value; }, 'f:' + p.id + ':altLabel', { render: false }));
+      lab.addEventListener('change', () => renderBoard());
+      out.push(el('div', { class: 'alt-strip' }, el('span', null, '⇄ Alternative shots: '), grp.map(q => el('button', { class: 'alt-pick' + (q.id === p.id ? ' cur' : '') + (q.active !== false ? ' on' : ''), title: q.active !== false ? 'active' : 'inactive', onclick: () => select(q.id) }, (q.altLabel || '?') + (q.active !== false ? ' ●' : ''))),
+        p.active === false ? el('button', { class: 'primary alt-activate', onclick: () => setActivePageUI(p.id) }, 'Make this one active') : el('span', { class: 'muted' }, ' (this one plays)'), ' ', lab));
+    }
+    return out.length ? el('div', { class: 'alts' }, out) : null;
+  }
+  function cutsTab(p) {
+    const box = el('div', { class: 'cutstab' });
+    const d = dur(p); const per = p.cuts.map(c => c.duration || d / p.cuts.length); const tot = per.reduce((a, b) => a + b, 0) || 1;
+    if (p.cuts.length) {
+      const ctl = el('div', { class: 'ctl', title: 'Drag blocks to reorder; drag a block\u2019s right edge to change its duration' });
+      p.cuts.forEach((c, i) => {
+        const blk = el('div', { class: 'cblk' + (c.duration ? '' : ' auto'), dataset: { i }, style: { flexBasis: (per[i] / tot * 100) + '%' }, title: (c.media.name || c.media.path || '') + ' · ' + (Math.round(per[i] * 1000) / 1000) + ' s' + (c.speed ? ' · ' + c.speed + '×' : '') },
+          el('span', { class: 'cn' }, (i + 1) + ''), el('span', { class: 'cl' }, (Math.round(per[i] * 100) / 100) + 's' + (c.speed ? ' ' + (c.speed < 0 ? '◀' : '') + Math.abs(c.speed) + '×' : '')),
+          el('span', { class: 'cedge', title: 'Drag to change the duration' }));
+        const edge = blk.querySelector('.cedge');
+        edge.addEventListener('pointerdown', (e) => {
+          e.preventDefault(); e.stopPropagation(); edge.setPointerCapture(e.pointerId);
+          const pxs = ctl.getBoundingClientRect().width / tot; const x0 = e.clientX; const d0 = per[i]; let nd = d0;
+          const mv = (ev) => { nd = Math.max(0.04, Math.round((d0 + (ev.clientX - x0) / pxs) * 100) / 100); blk.style.flexBasis = (nd / tot * 100) + '%'; blk.querySelector('.cl').textContent = nd + 's'; };
+          const up = () => { edge.removeEventListener('pointermove', mv); edge.removeEventListener('pointerup', up); mutate(() => { findPage(p.id).page.cuts[i].duration = nd; }); };
+          edge.addEventListener('pointermove', mv); edge.addEventListener('pointerup', up);
+        });
+        ctl.append(blk);
+      });
+      sortables.push(Sortable.create(ctl, { animation: 120, direction: 'horizontal', filter: '.cedge', preventOnFilter: false, onEnd: () => {
+        const ord = $$('.cblk', ctl).map(b => +b.dataset.i); if (ord.every((x, k) => x === k)) return;
+        mutate(() => { const pg = findPage(p.id).page; pg.cuts = ord.map(k => pg.cuts[k]); });
+      } }));
+      const loops = d / tot;
+      box.append(el('div', { class: 'fld' }, el('label', null, 'Timeline · cuts ' + (Math.round(tot * 100) / 100) + ' s / page ' + (Math.round(d * 100) / 100) + ' s' + (Math.abs(loops - 1) > 0.02 ? (loops > 1 ? ' · loops ×' + (Math.round(loops * 10) / 10) : ' · last cuts are cut off') : '')), ctl));
+    }
+    box.append(cutsBox(p), el('div', { class: 'btns' }, el('button', { class: 'cut-import', onclick: () => importEditDialog({ mode: 'cuts', pageId: p.id }) }, '⬇ Import cuts from CSV / EDL…')));
+    return box;
+  }
+  function folderFiles() { return Array.from(local.files.values()).filter(e => VID_EXT.test(e.name) || IMG_EXT.test(e.name)).map(e => ({ path: relFromBase(e.path), name: e.name })); }
+  /** Import a Resolve edit (CSV or CMX3600 EDL): preview, then apply onto pages by song time, or into one page's cuts. */
+  function importEditDialog(opts = {}) {
+    const ta = el('textarea', { rows: 7, class: 'ie-text', placeholder: 'Paste an EDL (CMX3600) or a CSV here, or choose a file…' });
+    const file = el('input', { type: 'file', accept: '.edl,.csv,.txt,.tsv', class: 'ie-file' });
+    file.onchange = async () => { if (file.files[0]) { ta.value = await file.files[0].text(); preview(); } };
+    const fps = el('input', { type: 'number', step: '0.001', value: doc.fps || 24, class: 'ie-fps', style: { width: '80px' } });
+    const mode = el('select', { class: 'ie-mode' }, el('option', { value: 'pages' }, 'Map onto pages by song time'), el('option', { value: 'cuts' }, 'Into the selected page\u2019s cuts'));
+    mode.value = opts.mode || 'pages';
+    const off = el('input', { class: 'ie-offset', value: '0:00', style: { width: '80px' }, title: 'Song time at the start of the record timeline (01:00:00:00 or 00:00:00:00)' });
+    const out = el('div', { class: 'ie-out' }); let plan = null;
+    const preview = () => {
+      out.innerHTML = '';
+      const evs = S.parseEditList(ta.value, parseFloat(fps.value) || 24);
+      if (!evs.length) { out.append(el('p', { class: 'muted' }, ta.value.trim() ? 'No events found. Expecting a CMX3600 EDL or a CSV with clip / source in / out / record in columns.' : '')); plan = null; return; }
+      const pid = opts.pageId || selected;
+      if (mode.value === 'cuts' && !pid) { out.append(el('p', { class: 'ed-warn' }, 'Select a page first.')); plan = null; return; }
+      plan = S.planEditImport(doc, evs, { mode: mode.value, pageId: pid, offset: S.parseTime(off.value) || 0, files: folderFiles() });
+      const labels = S.pageLabels(doc); const assigned = plan.rows.filter(r => r.pageId).length;
+      out.append(el('p', null, plan.rows.length + ' events · ' + assigned + ' assigned · ' + plan.rows.filter(r => r.found).length + ' matched to files in the folder' + (local.kind ? '' : ' (no folder open: clip names are kept as paths)')),
+        el('table', { class: 'ie-table' }, el('tr', null, ['#', 'clip', 'file', 'src in–out', 'speed', 'song', '→ page'].map(h => el('th', null, h))),
+          plan.rows.map(r => el('tr', { class: r.pageId ? '' : 'unassigned' }, el('td', null, String(r.ev.n)), el('td', null, r.ev.clip), el('td', null, r.found ? '✓ ' + r.media.path : '✗ not found'),
+            el('td', null, (r.media.in ?? '') + '–' + (r.media.out ?? '')), el('td', null, r.speed !== 1 ? r.speed + '×' : ''), el('td', null, r.songIn !== null ? S.fmtTime(r.songIn, true) : ''),
+            el('td', null, r.pageId ? labels.get(r.pageId) + (plan.pages[r.pageId].length > 1 ? ' (cut ' + (plan.pages[r.pageId].indexOf(r) + 1) + ')' : '') : '—')))),
+        el('p', { class: 'muted' }, mode.value === 'cuts' ? 'Apply replaces the page\u2019s cuts with these events.' : 'A page that gets one event: its video and source in/out are set. A page that gets several: they become its cuts.'));
+    };
+    [ta, fps, mode, off].forEach(x => x.addEventListener(x === ta ? 'input' : 'change', preview));
+    const box = el('div', { class: 'import-edit' }, el('h2', null, '⬇ Import cut list (CSV / EDL)'), ta, el('div', { class: 'row' }, file),
+      el('div', { class: 'row' }, el('label', null, 'Mode ', mode), el('label', null, 'fps ', fps), el('label', null, 'record start = song ', off)), out,
+      el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), el('button', { class: 'ie-preview', onclick: preview }, 'Preview'),
+        el('button', { class: 'primary ie-apply', onclick: () => { if (!plan || !Object.keys(plan.pages).length) return toast('Nothing to apply'); const m = mode.value; mutate(d => { S.applyEditPlan(d, plan, m); }); closeModal(); toast('Applied ' + plan.rows.filter(r => r.pageId).length + ' events to ' + Object.keys(plan.pages).length + ' page(s). Undo with Ctrl/Cmd+Z.', 4000); } }, 'Apply')));
+    modal(box, { wide: true });
+  }
+  function renderVariantBar() {
+    const sel = $('#variantSel'); const has = doc && (doc.variants.length || allPages().length !== activePages().length || doc.scenes.some(x => x.slot));
+    $('#variantWrap').hidden = !has; if (!has) return;
+    sel.innerHTML = '';
+    const cur = doc.variants.find(v => v.id === doc.activeVariant); const match = cur && S.variantMatches(doc, cur);
+    sel.append(el('option', { value: '' }, cur && !match ? '✎ ' + cur.name + ' (changed)' : '— current choices —'));
+    for (const v of doc.variants) sel.append(el('option', { value: v.id }, v.name));
+    sel.value = match ? cur.id : '';
+  }
+  function applyVariantUI(id) {
+    const v = doc.variants.find(x => x.id === id); if (!v) return;
+    const before = S.timeline(doc).screen; mutate(d => { S.applyVariant(d, v); d.activeVariant = v.id; });
+    toast(v.name + ' · runtime ' + S.fmtTime(S.timeline(doc).screen) + ' (' + fmtDiff(S.timeline(doc).screen - before) + ')', 2600);
+  }
+  function exportVariant(v, kind) {
+    const dd = S.withVariant(doc, v); const base = S.slug(doc.title) + '-' + S.slug(v.name);
+    if (kind === 'csv') downloadBlob(S.toCSV(dd), 'text/csv', base + '-edit.csv'); else downloadBlob(S.toCMX3600(dd), 'text/plain', base + '.edl');
+  }
+  function exportAllVariants() {
+    if (!doc.variants.length) return toast('No variants yet. Save the current choices as a variant first.');
+    downloadBlob(S.toCSVAllVariants(doc), 'text/csv', S.slug(doc.title) + '-all-variants.csv');
+    doc.variants.forEach((v, i) => setTimeout(() => exportVariant(v, 'edl'), 400 * (i + 1)));
+  }
+  function variantManager() {
+    const box = el('div', { class: 'varmgr' });
+    const draw = () => {
+      box.innerHTML = '';
+      const c = S.currentChoices(doc); const n = Object.keys(c.slots).length + Object.keys(c.pages).length;
+      const name = el('input', { class: 'vm-name', placeholder: 'e.g. Director\u2019s cut' });
+      box.append(el('h2', null, '⇄ Variants'), el('p', { class: 'muted' }, 'A variant remembers which alternative is active in every scene slot and page group (' + n + ' choice' + (n === 1 ? '' : 's') + ' on this board). Inactive alternatives are never deleted.'));
+      for (const v of doc.variants) {
+        const match = S.variantMatches(doc, v); const dd = S.withVariant(doc, v);
+        const rn = el('input', { value: v.name, class: 'vm-rename' }); rn.addEventListener('change', () => { mutate(d => { d.variants.find(x => x.id === v.id).name = rn.value.trim() || v.name; }); draw(); });
+        box.append(el('div', { class: 'vrow' + (match ? ' on' : ''), dataset: { id: v.id } }, rn, el('span', { class: 'muted' }, S.fmtTime(S.timeline(dd).screen) + (match ? ' · active' : '')),
+          el('button', { class: 'vm-apply', disabled: match, onclick: () => { applyVariantUI(v.id); draw(); } }, 'Switch'),
+          el('button', { class: 'vm-update', title: 'Store the current choices in this variant', onclick: () => { mutate(d => { const x = d.variants.find(y => y.id === v.id); const cc = S.currentChoices(d); x.slots = cc.slots; x.pages = cc.pages; d.activeVariant = v.id; }); draw(); } }, 'Update'),
+          el('button', { class: 'vm-csv', onclick: () => exportVariant(v, 'csv') }, 'CSV'), el('button', { class: 'vm-edl', onclick: () => exportVariant(v, 'edl') }, 'EDL'),
+          el('button', { class: 'danger vm-del', onclick: () => { mutate(d => { d.variants = d.variants.filter(x => x.id !== v.id); if (d.activeVariant === v.id) d.activeVariant = ''; }); draw(); } }, '✕')));
+      }
+      box.append(el('div', { class: 'row' }, name, el('button', { class: 'primary vm-save', onclick: () => {
+        const nm = name.value.trim() || 'Variant ' + (doc.variants.length + 1); let id = 'v_' + (S.slug(nm) || 'variant'); while (doc.variants.find(x => x.id === id)) id += '2';
+        mutate(d => { const cc = S.currentChoices(d); d.variants.push({ id, name: nm, slots: cc.slots, pages: cc.pages }); d.activeVariant = id; }); draw();
+      } }, 'Save current choices as variant')),
+        el('div', { class: 'modal-actions' }, el('button', { class: 'vm-all', onclick: exportAllVariants }, 'Export all variants (CSV + one EDL each)'), el('button', { class: 'primary', onclick: closeModal }, 'Close')));
+    };
+    draw(); modal(box, { wide: true });
+  }
   function charPicker(p) {
     const box = el('div', { class: 'charpick' });
     doc.characters.forEach(c => {
@@ -829,7 +1013,7 @@
       if (type === 'video' && r.playable) prev.append(el('video', { src: r.src, controls: true, playsinline: true, preload: 'metadata' }));
       else {
         const img = el('img', { src: r.kind === 'drive' ? driveThumb(m.driveId, 800) : r.src, alt: '' });
-        img.onerror = () => img.replaceWith(note(type === 'video' ? 'Video on Drive. Open the folder locally to play it here, or use ↗ Drive.' : 'Drive image not visible. Sign in to Google in this browser, or open the folder locally.'));
+        img.onerror = () => img.replaceWith(note(onlineOnly(m) ? '☁ Online only (Drive). The thumbnail needs Google sign-in in this browser; use ↗ Drive to open it.' : type === 'video' ? 'Video on Drive. Open the folder locally to play it here, or use ↗ Drive.' : 'Drive image not visible. Sign in to Google in this browser, or open the folder locally.'));
         prev.append(img);
       }
     })();
@@ -856,23 +1040,23 @@
     return np.id;
   }
   function duplicatePage(id) {
-    const f = findPage(id); const cp = JSON.parse(JSON.stringify(f.page)); cp.id = S.uid('p'); cp.comments = [];
-    mutate(d => { const s = d.scenes.find(x => x.id === f.scene.id); s.pages.splice(s.pages.findIndex(p => p.id === id) + 1, 0, cp); });
+    const f = findPage(id); const cp = JSON.parse(JSON.stringify(f.page)); cp.id = S.uid('p'); cp.comments = []; cp.altOf = ''; cp.altLabel = ''; cp.active = true;
+    mutate(d => { const s = d.scenes.find(x => x.id === f.scene.id); const it = S.pageItems(s).find(x => x.pages.some(q => q.id === id)); s.pages.splice(s.pages.indexOf(it.pages[it.pages.length - 1]) + 1, 0, cp); });
     select(cp.id); toast('Page duplicated');
   }
   function deletePage(id) {
     const n = pageNumber(id);
-    mutate(d => { for (const s of d.scenes) s.pages = s.pages.filter(p => p.id !== id); });
+    mutate(d => { S.removePage(d, id); });
     if (selected === id) select(null);
     toast('Page ' + n + ' deleted · Undo with Ctrl/Cmd+Z');
   }
   function movePage(id, delta) {
     const f = findPage(id);
-    mutate(d => {
-      const s = d.scenes.find(x => x.id === f.scene.id); const i = s.pages.findIndex(p => p.id === id);
-      if (delta < 0 && i > 0) { [s.pages[i - 1], s.pages[i]] = [s.pages[i], s.pages[i - 1]]; }
-      else if (delta > 0 && i < s.pages.length - 1) { [s.pages[i + 1], s.pages[i]] = [s.pages[i], s.pages[i + 1]]; }
-      else { const si = d.scenes.indexOf(s); const tgt = d.scenes[si + delta]; if (!tgt) return; const [pg] = s.pages.splice(i, 1); if (delta < 0) tgt.pages.push(pg); else tgt.pages.unshift(pg); }
+    mutate(d => { // moves the whole alternative group of the page
+      const s = d.scenes.find(x => x.id === f.scene.id); const items = S.pageItems(s); const i = items.findIndex(it => it.pages.some(q => q.id === id));
+      if (delta < 0 && i > 0) { [items[i - 1], items[i]] = [items[i], items[i - 1]]; s.pages = items.flatMap(it => it.pages); }
+      else if (delta > 0 && i < items.length - 1) { [items[i + 1], items[i]] = [items[i], items[i + 1]]; s.pages = items.flatMap(it => it.pages); }
+      else { const si = d.scenes.indexOf(s); const tgt = d.scenes[si + delta]; if (!tgt) return; const grp = items[i].pages; s.pages = s.pages.filter(q => !grp.includes(q)); if (delta < 0) tgt.pages.push(...grp); else tgt.pages.unshift(...grp); }
     });
   }
   function movePageToScene(id, sceneId) {
@@ -884,10 +1068,10 @@
     setTimeout(() => { const n = document.getElementById('scene-' + s.id); if (n) { n.scrollIntoView({ behavior: 'smooth' }); n.querySelector('.sc-title').select(); } }, 50);
   }
   function moveScene(id, delta) {
-    mutate(d => { const i = d.scenes.findIndex(s => s.id === id); const j = i + delta; if (j < 0 || j >= d.scenes.length) return; [d.scenes[i], d.scenes[j]] = [d.scenes[j], d.scenes[i]]; });
+    mutate(d => { S.moveSceneItem(d, id, delta); });
   }
   function duplicateScene(id) {
-    mutate(d => { const i = d.scenes.findIndex(s => s.id === id); const cp = JSON.parse(JSON.stringify(d.scenes[i])); cp.id = S.uid('s'); cp.title += ' (copy)'; cp.pages.forEach(p => { p.id = S.uid('p'); p.comments = []; }); d.scenes.splice(i + 1, 0, cp); });
+    mutate(d => { const i = d.scenes.findIndex(s => s.id === id); const cp = JSON.parse(JSON.stringify(d.scenes[i])); cp.id = S.uid('s'); cp.title += ' (copy)'; cp.slot = ''; cp.altLabel = ''; cp.active = true; const mp = new Map(); cp.pages.forEach(p => { const n = S.uid('p'); mp.set(p.id, n); p.id = n; p.comments = []; }); cp.pages.forEach(p => { if (p.altOf) p.altOf = mp.get(p.altOf) || ''; }); const items = S.sceneItems(d); const it = items.find(x => x.scenes.some(y => y.id === id)); const last = it.scenes[it.scenes.length - 1]; d.scenes.splice(d.scenes.indexOf(last) + 1, 0, cp); });
   }
   async function deleteScene(id) {
     const s = doc.scenes.find(x => x.id === id);
@@ -895,7 +1079,7 @@
       const r = await ask('Delete scene?', 'Delete <b>' + esc(s.title) + '</b> and its ' + s.pages.length + ' page(s)? You can undo this.', [{ label: 'Cancel', value: false }, { label: 'Delete', value: true, cls: 'danger' }]);
       if (!r) return;
     }
-    mutate(d => { d.scenes = d.scenes.filter(x => x.id !== id); if (!d.scenes.length) d.scenes.push(S.normScene({ title: 'Scene 1' }, 0)); });
+    mutate(d => { S.removeScene(d, id); if (!d.scenes.length) d.scenes.push(S.normScene({ title: 'Scene 1' }, 0)); });
     if (selected && !findPage(selected)) select(null);
   }
   async function editSceneNotes(id) {
@@ -1243,7 +1427,7 @@
         .filter(e => !f || e.path.toLowerCase().includes(f)).filter(e => !local.base || e.path.startsWith(local.base + '/'));
       const best = new Map();
       for (const e of files) { const m = S.matchNumber(e.name); if (!m) continue; const k = e.type + ':' + m.num; const cur = best.get(k); if (!cur || m.ver > cur.ver || (m.ver === cur.ver && e.path < cur.e.path)) best.set(k, { e, ver: m.ver, num: m.num }); }
-      const pages = allPages(); const changes = []; const used = new Set();
+      const pages = activePages(); const changes = []; const used = new Set();
       pages.forEach((p, i) => {
         const num = by.value === 'code' && parseInt(p.code, 10) > 0 ? parseInt(p.code, 10) : i + 1;
         for (const t of ['image', 'video']) {
@@ -1291,14 +1475,17 @@
   }
   function exportMd() { downloadBlob(S.toMarkdown(doc), 'text/markdown', S.slug(doc.title) + '.md'); }
   async function printBoard() {
+    let withAlts = false;
+    if (allPages().length !== activePages().length) { const r = await ask('Print', 'This board has inactive alternatives.', [{ label: 'Active only', value: 'a' }, { label: 'Include alternatives', value: 'all' }, { label: 'Cancel', value: null }]); if (!r) return; withAlts = r === 'all'; }
+    const labels = S.pageLabels(doc);
     const pr = $('#print'); pr.innerHTML = '';
     pr.append(el('div', { class: 'pr-head' }, el('span', null, doc.title + (doc.project ? ' · ' + doc.project : '')), el('span', null, $('#runtime').textContent + ' · ' + new Date().toLocaleDateString())));
     let n = 0; const waits = [];
-    for (const s of doc.scenes) {
-      pr.append(el('div', { class: 'pr-scene' }, s.title));
+    for (const s of (withAlts ? doc : S.activeDoc(doc)).scenes) {
+      pr.append(el('div', { class: 'pr-scene' }, s.title + (s.active === false ? ' — alternative ' + (s.altLabel || '') + ' (inactive)' : '')));
       const g = el('div', { class: 'pr-grid' });
       for (const p of s.pages) {
-        n++; const im = el('div', { class: 'im' });
+        n = labels.get(p.id) + (p.active === false && s.active !== false ? ' (alt ' + (p.altLabel || '') + ')' : ''); const im = el('div', { class: 'im' });
         const r = await resolveMedia(p.image).catch(() => null) || (p.video && p.video.driveId ? { src: driveThumb(p.video.driveId) } : null);
         if (r) { const img = el('img', { src: r.src }); waits.push(new Promise(ok => { img.onload = ok; img.onerror = () => { img.remove(); ok(); }; })); im.append(img); } else im.append(el('span', null, p.title || ''));
         g.append(el('div', { class: 'pr-card' }, im, el('div', { class: 'tx' },
@@ -1375,7 +1562,7 @@
   const pl = { seq: [], i: 0, t0: 0, elapsed: 0, playing: false, raf: 0, total: 0, starts: [], token: 0, segs: [], seg: -1, lastSeek: 0 };
   async function play(fromId) {
     if (!doc) return;
-    pl.seq = allPages().filter(p => p.status !== 'cut');
+    pl.seq = activePages().filter(p => p.status !== 'cut');
     if (!pl.seq.length) return toast('No pages to play');
     pl.starts = []; let t = 0; for (const p of pl.seq) { pl.starts.push(t); t += dur(p); } pl.total = t;
     pl.i = Math.max(0, fromId ? pl.seq.findIndex(p => p.id === fromId) : 0);
@@ -1414,7 +1601,7 @@
     const p = pl.seq[i];
     const sp = S.speedOf(p);
     const fx = [p.role && p.role !== 'linear' ? S.ROLES.find(r => r.id === p.role).label : '', sp !== 1 ? (sp < 0 ? '◀◀ reverse ' + Math.abs(sp) + '× (simulated)' : Math.round(sp * 100) + '% speed') : '', p.retime ? S.RETIMES.find(r => r.id === p.retime).label + ' (not simulated)' : '', p.effect ? 'effect: ' + p.effect : '', p.cuts.length ? p.cuts.length + ' cuts' : ''].filter(Boolean).join(' · ');
-    $('#plInfo').textContent = 'Page ' + pageNumber(p.id) + ' / ' + allPages().length + (p.title ? ' · ' + p.title : '') + (p.start ? ' · ' + p.start : '');
+    $('#plInfo').textContent = 'Page ' + pageNumber(p.id) + ' / ' + activePages().length + (p.title ? ' · ' + p.title : '') + (p.start ? ' · ' + p.start : '');
     $('#plFx').textContent = fx; $('#plFx').hidden = !fx;
     $('#plCaption').textContent = $('#plCaptions').checked ? lyr(p) : '';
     const stage = $('#player .stage');
@@ -1545,7 +1732,7 @@
   }
   const actions = {
     openFolder, openFile, sample: loadSample, new: newDoc, reload: () => reloadFromDisk(false), autolink: autoLinkDialog, importText: importTextDialog,
-    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), cast: () => doc && castManager(), exportCsv: () => doc && exportEdit('csv'), exportEdl: () => doc && exportEdit('edl'), exportEdlText: () => doc && exportEdit('txt'), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
+    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), cast: () => doc && castManager(), exportCsv: () => doc && exportEdit('csv'), exportEdl: () => doc && exportEdit('edl'), exportEdlText: () => doc && exportEdit('txt'), importEdit: () => doc && importEditDialog({ mode: 'pages' }), variants: () => doc && variantManager(), exportAllVariants: () => doc && exportAllVariants(), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
   };
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]'); if (a) { $('#menu').hidden = true; if (actions[a.dataset.act]) actions[a.dataset.act](); return; }
@@ -1555,6 +1742,8 @@
   $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
   $('#btnSave').onclick = () => save(); $('#btnPlay').onclick = () => play(selected);
   $('#btnAddScene').onclick = addScene;
+  $('#variantSel').onchange = () => { const v = $('#variantSel').value; if (v) applyVariantUI(v); };
+  $('#btnVariants').onclick = () => doc && variantManager();
   $('#docTitle').addEventListener('input', () => mutate(d => { d.title = $('#docTitle').value; }, 'doc-title', { render: false }));
   $$('.seg button').forEach(b => b.onclick = () => { view = b.dataset.view; $$('.seg button').forEach(x => x.classList.toggle('on', x === b)); render(); });
   const applyFilter = () => { $$('.card').forEach(c => c.classList.toggle('filtered-out', !pageMatches(findPage(c.dataset.id).page))); $$('#script .sp').forEach(c => c.classList.toggle('filtered-out', !pageMatches(findPage(c.dataset.id).page))); };
@@ -1612,6 +1801,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
+  window.__sb = { importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
   init();
 })();

@@ -1,10 +1,10 @@
 {
   "format": "storyboard-studio",
-  "version": 2,
-  "revision": 1,
+  "version": 3,
+  "revision": 2,
   "title": "Sample – Paper Moon",
   "project": "Storyboard Studio sample",
-  "updated": "2026-11-16T20:45:00+01:00",
+  "updated": "2026-11-16T21:30:00+01:00",
   "updatedBy": "Plug-in Baby",
   "aspect": "16:9",
   "defaultDuration": 4,
@@ -13,6 +13,29 @@
     "name": "sample-song.mp3"
   },
   "fps": 24,
+  "activeVariant": "v_album",
+  "variants": [
+    {
+      "id": "v_album",
+      "name": "Album cut",
+      "slots": {
+        "slot_end": "s_end"
+      },
+      "pages": {
+        "p_09": "p_09"
+      }
+    },
+    {
+      "id": "v_director",
+      "name": "Director's cut",
+      "slots": {
+        "slot_end": "s_end_b"
+      },
+      "pages": {
+        "p_09": "p_09b"
+      }
+    }
+  ],
   "characters": [
     {
       "id": "saisha",
@@ -130,7 +153,7 @@
       "text": "And the moon goes back to paper"
     }
   ],
-  "notes": "A made-up example so you can try everything: drag pages, swap images, press Play. v2 sample: cast with canon, looks and ref sets, takes, a generation log, speed/retime, a flicker cut burst and song lyrics.",
+  "notes": "A made-up example so you can try everything: drag pages, swap images, press Play. v2 sample: cast with canon, looks and ref sets, takes, a generation log, speed/retime, a flicker cut burst and song lyrics. v3 sample: the ending has two alternatives (A desert sunrise / B rooftop), page 09 has an alternative shot, and two variants (Album cut, Director's cut).",
   "scenes": [
     {
       "id": "s_intro",
@@ -250,7 +273,8 @@
               "approvedAt": "2026-11-16T15:30:00+01:00",
               "quote": "v2 is the one"
             }
-          ]
+          ],
+          "genSeconds": 4
         }
       ]
     },
@@ -317,7 +341,8 @@
               "tool": "seedance",
               "pick": true
             }
-          ]
+          ],
+          "genSeconds": 2
         },
         {
           "id": "p_06",
@@ -416,7 +441,64 @@
           "notes": "Idea only, no image yet.",
           "characters": [
             "mr-hat"
+          ],
+          "altLabel": "A"
+        },
+        {
+          "id": "p_09b",
+          "altOf": "p_09",
+          "altLabel": "B",
+          "active": false,
+          "start": "0:32",
+          "end": "0:36",
+          "status": "idea",
+          "title": "Post-credits (hat stays)",
+          "description": "Mr Hat leaves the paper moon where it is and tips his hat to camera.",
+          "characters": [
+            "mr-hat"
           ]
+        }
+      ],
+      "slot": "slot_end",
+      "altLabel": "A Desert sunrise"
+    },
+    {
+      "id": "s_end_b",
+      "title": "Ending – rooftop",
+      "color": "#4fd18b",
+      "slot": "slot_end",
+      "altLabel": "B Rooftop",
+      "active": false,
+      "notes": "Alternative ending: back on the rooftop, shorter.",
+      "pages": [
+        {
+          "id": "p_r1",
+          "start": "0:24",
+          "end": "0:30",
+          "status": "rendered",
+          "title": "Rooftop again",
+          "description": "Back on the rooftop; the paper moon drifts down into her hands.",
+          "camera": "low angle, slow push-in",
+          "characters": [
+            "saisha"
+          ],
+          "image": {
+            "path": "images/page-02.jpg"
+          }
+        },
+        {
+          "id": "p_r2",
+          "start": "0:30",
+          "end": "0:34",
+          "status": "idea",
+          "title": "Fold away",
+          "description": "She folds the moon and puts it in her pocket.",
+          "characters": [
+            "saisha"
+          ],
+          "image": {
+            "path": "images/page-06.jpg"
+          }
         }
       ]
     }

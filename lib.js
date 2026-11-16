@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const FORMAT = 'storyboard-studio';
-  const VERSION = 2;
+  const VERSION = 3;
   // v2: one status ladder (Mirrage's pipeline + the v1 values). v1 'image' -> 'rendered', 'animated' -> 'picked'.
   const STATUSES = [
     { id: 'idea', label: 'Idea / text only' },
@@ -95,17 +95,23 @@
     return m ? parseFloat(m[1].replace(',', '.')) : null;
   }
   /** Warning text when the clip prompt's length disagrees with the page's screen time (tolerance 0.5 s). */
+  /** v3: warn only when the generation (genSeconds) is too short for what the page uses:
+   *  source needed = page length × |speed| starting at video.in, and video.out must lie inside the generation.
+   *  No genSeconds -> no warning (the prompt text is not guessed any more). A longer generation trimmed down is normal. */
   function durationWarning(p, doc) {
-    const ps = promptSeconds(p.videoPrompt); if (ps === null) return '';
-    const d = pageDuration(p, doc);
-    if (Math.abs(ps - d) <= 0.5) return '';
-    const trimmed = rangeLen(p.video);
-    return 'Clip prompt says ' + ps + ' s but the page is ' + (Math.round(d * 100) / 100) + ' s on screen' +
-      (trimmed ? ' (source range ' + (Math.round(trimmed * 100) / 100) + ' s at speed ' + speedOf(p) + ')' : '') + '.';
+    const g = num(p.genSeconds); if (!(g > 0) || (p.cuts && p.cuts.length)) return '';
+    const r2 = (x) => Math.round(x * 100) / 100; const tol = 0.04;
+    const d = pageDuration(p, doc); const sp = Math.abs(speedOf(p)); const v = p.video || {};
+    const a = v.in !== undefined ? v.in : 0;
+    if (v.out !== undefined && v.out > g + tol) return 'Source out ' + r2(v.out) + ' s is past the end of the ' + r2(g) + ' s generation.';
+    const avail = (v.out !== undefined ? Math.min(v.out, g) : g) - a; const need = d * sp;
+    if (avail + tol < need) return 'Generation too short: the page needs ' + r2(need) + ' s of source (' + r2(d) + ' s' + (sp !== 1 ? ' × speed ' + r2(sp) : '') + (a ? ' from in ' + r2(a) + ' s' : '') + ') but only ' + r2(Math.max(0, avail)) + ' s of the ' + r2(g) + ' s generation is available.';
+    return '';
   }
 
   /** Song-time analysis: total screen time, song span and gaps/overlaps between consecutive linear pages. */
   function timeline(doc) {
+    doc = activeDoc(doc);
     let screen = 0, songStart = null, songEnd = null; const gaps = [], overlaps = [];
     let prev = null, between = 0;
     for (const s of doc.scenes) for (const p of s.pages) {
@@ -259,6 +265,8 @@
     out.retime = RETIME_IDS.includes(p.retime) ? p.retime : '';
     out.role = ROLE_IDS.includes(p.role) ? p.role : '';
     out.cuts = Array.isArray(p.cuts) ? p.cuts.map(normCut).filter(Boolean) : [];
+    const gs = num(p.genSeconds); out.genSeconds = gs > 0 ? gs : null;
+    out.altOf = p.altOf ? String(p.altOf) : ''; out.altLabel = p.altLabel ? String(p.altLabel) : ''; out.active = p.active !== false;
     out.characters = normCastRefs(p.characters);
     out.takes = Array.isArray(p.takes) ? p.takes.map(normTake).filter(Boolean) : [];
     out.genLog = Array.isArray(p.genLog) ? p.genLog.filter(g => g && typeof g === 'object').map(normGen) : [];
@@ -279,6 +287,7 @@
       color: /^#[0-9a-f]{6}$/i.test(s.color || '') ? s.color : SCENE_COLORS[i % SCENE_COLORS.length],
       notes: s.notes ? String(s.notes) : '',
       collapsed: !!s.collapsed,
+      slot: s.slot ? String(s.slot) : '', altLabel: s.altLabel ? String(s.altLabel) : '', active: s.active !== false,
       characters: normCastRefs(s.characters),
       pages: pages.map(normPage)
     };
@@ -304,6 +313,8 @@
       characters: Array.isArray(d.characters) ? d.characters.filter(c => c && (c.id || c.name)).map(normCharacter) : [],
       songLyrics: Array.isArray(d.songLyrics) ? d.songLyrics.map(l => l && typeof l === 'object' ? { t: typeof l.t === 'string' ? parseTime(l.t) : num(l.t), text: String(l.text || '') } : null).filter(l => l && l.t !== null && l.t >= 0 && l.text).sort((a, b) => a.t - b.t) : [],
       fps: num(d.fps) > 0 ? num(d.fps) : null,
+      variants: Array.isArray(d.variants) ? d.variants.filter(v => v && typeof v === 'object').map((v, i) => ({ id: v.id ? String(v.id) : 'v' + (i + 1), name: v.name ? String(v.name) : 'Variant ' + (i + 1), slots: strMap(v.slots), pages: strMap(v.pages) })) : [],
+      activeVariant: d.activeVariant ? String(d.activeVariant) : '',
       notes: d.notes ? String(d.notes) : '',
       updated: d.updated ? String(d.updated) : '',
       updatedBy: d.updatedBy ? String(d.updatedBy) : '',
@@ -316,6 +327,8 @@
       if (seen.has(s.id)) s.id = uid('s'); seen.add(s.id);
       for (const p of s.pages) { if (seen.has(p.id)) p.id = uid('p'); seen.add(p.id); }
     }
+    regroup(out);
+    if (out.activeVariant && !out.variants.find(v => v.id === out.activeVariant)) out.activeVariant = '';
     // unknown character ids referenced by pages become characters
     const known = new Set(out.characters.map(c => c.id));
     for (const s of out.scenes) for (const r of s.characters.concat(...s.pages.map(p => p.characters))) {
@@ -331,6 +344,7 @@
       if (o && typeof o === 'object') {
         const r = {};
         for (const [k, v] of Object.entries(o)) {
+          if (k === 'active') { if (v === false) r[k] = false; continue; } // v3: only inactive alternatives carry "active": false
           if (v === '' || v === null || v === undefined || v === false) continue;
           if (Array.isArray(v) && !v.length && k !== 'pages' && k !== 'scenes') continue;
           r[k] = clean(v);
@@ -343,7 +357,7 @@
     for (const s of pre.scenes || []) { s.characters = (s.characters || []).map(castRefOut); for (const p of s.pages || []) p.characters = (p.characters || []).map(castRefOut); }
     const d = clean(pre);
     // keep the header fields first for humans/Mirrage
-    const order = ['format', 'version', 'revision', 'title', 'project', 'updated', 'updatedBy', 'aspect', 'defaultDuration', 'driveFolderId', 'audio', 'audioOffset', 'fps', 'characters', 'songLyrics', 'notes', 'scenes'];
+    const order = ['format', 'version', 'revision', 'title', 'project', 'updated', 'updatedBy', 'aspect', 'defaultDuration', 'driveFolderId', 'audio', 'audioOffset', 'fps', 'activeVariant', 'variants', 'characters', 'songLyrics', 'notes', 'scenes'];
     const out = {};
     for (const k of order) if (k in d) out[k] = d[k];
     for (const k of Object.keys(d)) if (!(k in out)) out[k] = d[k];
@@ -387,7 +401,7 @@
     const FIELD_MAP = [
       [/^lyrics?$/i, 'lyrics'], [/^(description|action|beat)$/i, 'description'], [/^image prompt$/i, 'imagePrompt'],
       [/^(clip|video) prompt/i, 'videoPrompt'], [/^negative( prompt)?$/i, 'negativePrompt'], [/^mood$/i, 'mood'],
-      [/^image tool$/i, 'imageTool'], [/^(video|clip) tool$/i, 'videoTool'], [/^negative tool$/i, 'negativeTool'], [/^takes$/i, '_takes'],
+      [/^image tool$/i, 'imageTool'], [/^(video|clip) tool$/i, 'videoTool'], [/^negative tool$/i, 'negativeTool'], [/^takes$/i, '_takes'], [/^gen(eration)?[\s-]*(seconds|length|secs?)$/i, '_gen'],
       [/^(camera|shot)$/i, 'camera'], [/^notes?$/i, 'notes'], [/^flag$/i, 'flag'],
       [/^(title)$/i, 'title'], [/^(characters?|cast)$/i, '_chars'], [/^duration$/i, '_dur'],
       [/^role$/i, '_role'], [/^speed$/i, '_speed'], [/^retime$/i, '_retime'], [/^effects?$/i, 'effect'],
@@ -432,6 +446,7 @@
           field = hit[1];
           if (field === '_chars') { page.characters = parseCastList(value); field = null; continue; }
           if (field === '_takes') { page.takes = page.takes || []; continue; }
+          if (field === '_gen') { const g = parseFloat(value); if (g > 0) page.genSeconds = g; field = null; continue; }
           if ((field === 'imagePrompt' || field === 'videoPrompt' || field === 'negativePrompt') && paren && toolId(paren)) { page[field.replace('Prompt', 'Tool')] = toolId(paren); paren = ''; }
           if (field === '_dur') { const d = parseFloat(value); if (d > 0) page.duration = d; field = null; continue; }
           if (field === '_role') { page.role = parseRole(value); field = null; continue; }
@@ -496,6 +511,7 @@
   function pad2(n) { return String(n).padStart(2, '0'); }
 
   function toMarkdown(doc) {
+    const hidden = allPages(doc).length - allPages(activeDoc(doc)).length; doc = activeDoc(doc);
     const out = [];
     out.push('# ' + doc.title, '');
     const meta = [doc.project, doc.updated ? 'updated ' + doc.updated.slice(0, 10) : '', doc.updatedBy ? 'by ' + doc.updatedBy : ''].filter(Boolean).join(' · ');
@@ -524,6 +540,7 @@
         if (p.imageTool && !toolId(p.imageTool)) out.push('**Image tool:** ' + p.imageTool, '');
         if (p.videoPrompt) out.push('**VIDEO PROMPT' + tp(p.videoTool) + ':** ' + p.videoPrompt, '');
         if (p.videoTool && !toolId(p.videoTool)) out.push('**Video tool:** ' + p.videoTool, '');
+        if (p.genSeconds) out.push('**Gen seconds:** ' + p.genSeconds, '');
         if (p.negativePrompt) out.push('**NEGATIVE PROMPT' + tp(p.negativeTool) + ':** ' + p.negativePrompt, '');
         if (p.negativeTool && !toolId(p.negativeTool)) out.push('**Negative tool:** ' + p.negativeTool, '');
         if (p.notes) out.push('**Notes:** ' + p.notes, '');
@@ -540,6 +557,7 @@
       }
     });
     const tl = timeline(doc);
+    if (hidden) out.push('*' + hidden + ' page(s) in inactive alternatives are not exported (they stay in the JSON).*', '');
     out.push('---', '', '*' + n + ' pages · screen time ' + fmtTime(total) + (tl.songSpan !== null ? ' · song ' + fmtTime(tl.songStart) + '–' + fmtTime(tl.songEnd) : '') + (tl.gaps.length ? ' · ' + tl.gaps.length + ' song-time gap(s)' : '') + '*', '');
     return out.join('\n');
   }
@@ -622,17 +640,16 @@
   /** Where a look or refSet is used: [{kind:'page'|'scene'|'look'|'default', id, label}] */
   function usedIn(doc, charId, what) {
     const ch = charOf(doc, charId); if (!ch) return [];
-    const out = []; let n = 0;
+    const out = []; const labels = pageLabels(doc);
     const lookIds = what.lookId ? [what.lookId] : ch.looks.filter(l => l.refSetId === what.refSetId).map(l => l.id);
     if (what.refSetId) for (const l of ch.looks) if (l.refSetId === what.refSetId) out.push({ kind: 'look', id: l.id, label: 'look ' + l.label });
     if (what.lookId && ch.defaultLookId === what.lookId) out.push({ kind: 'default', id: ch.id, label: 'default look' });
     for (const s of doc.scenes) {
       if ((s.characters || []).some(r => r.charId === charId && (lookIds.includes(r.lookId) || (what.refSetId && r.overrides && r.overrides.refSetId === what.refSetId)))) out.push({ kind: 'scene', id: s.id, label: 'scene ' + s.title });
       for (const p of s.pages) {
-        n++;
         if (!(p.characters || []).some(r => r.charId === charId)) continue;
         const e = effectiveLook(doc, s, p, charId);
-        if ((what.lookId && e.lookId === what.lookId) || (what.refSetId && e.refSet && e.refSet.id === what.refSetId)) out.push({ kind: 'page', id: p.id, label: 'page ' + pad2(n) + (e.source !== 'page' ? ' (via ' + e.source + ')' : '') });
+        if ((what.lookId && e.lookId === what.lookId) || (what.refSetId && e.refSet && e.refSet.id === what.refSetId)) out.push({ kind: 'page', id: p.id, label: 'page ' + labels.get(p.id) + (e.source !== 'page' ? ' (via ' + e.source + ')' : '') });
       }
     }
     return out;
@@ -640,6 +657,7 @@
 
   /** One row per page (and per cut) for Resolve: song in/out, clip, source in/out, speed, duration, record in/out. */
   function editRows(doc) {
+    doc = activeDoc(doc);
     const rows = []; let n = 0, rec = 0;
     for (const s of doc.scenes) for (const p of s.pages) {
       n++; if (p.status === 'cut') continue;
@@ -694,8 +712,251 @@
     return out.join('\n');
   }
 
+  // ---------- v3: alternatives (scene slots, page alternatives) and variants ----------
+  function strMap(o) { const r = {}; if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) if (k && v) r[String(k)] = String(v); return r; }
+  const isActive = (x) => x.active !== false;
+  /** Keep alternatives together and exactly one active per slot / page group. Safe to run after any edit. */
+  function regroup(doc) {
+    // scenes: all members of a slot sit together at the position of the first member
+    const bySlot = new Map(); for (const sc of doc.scenes) if (sc.slot) { if (!bySlot.has(sc.slot)) bySlot.set(sc.slot, []); bySlot.get(sc.slot).push(sc); }
+    const seen = new Set(); const scenes = [];
+    for (const sc of doc.scenes) {
+      if (!sc.slot) { sc.active = true; scenes.push(sc); continue; }
+      if (seen.has(sc.slot)) continue; seen.add(sc.slot);
+      const g = bySlot.get(sc.slot);
+      if (g.length === 1) { g[0].active = true; scenes.push(g[0]); continue; }
+      let on = false; for (const m of g) { if (isActive(m) && !on) { m.active = true; on = true; } else m.active = false; }
+      if (!on) g[0].active = true;
+      scenes.push(...g);
+    }
+    doc.scenes = scenes;
+    // pages: alternatives follow their root page (altOf chains resolve to the root; dangling altOf is cleared)
+    const where = new Map(); for (const sc of doc.scenes) for (const p of sc.pages) where.set(p.id, p);
+    const rootOf = (p) => { let x = p, guard = 0; while (x.altOf && where.has(x.altOf) && x.altOf !== x.id && guard++ < 50) x = where.get(x.altOf); return x; };
+    for (const p of where.values()) { if (p.altOf && (!where.has(p.altOf) || p.altOf === p.id)) p.altOf = ''; if (p.altOf) { const r = rootOf(p); p.altOf = r.id === p.id ? '' : r.id; } }
+    const alts = new Map(); for (const p of where.values()) if (p.altOf) { if (!alts.has(p.altOf)) alts.set(p.altOf, []); alts.get(p.altOf).push(p); }
+    for (const sc of doc.scenes) {
+      const out = [];
+      for (const p of sc.pages) {
+        if (p.altOf) continue;
+        const g = [p].concat(alts.get(p.id) || []);
+        if (g.length === 1) p.active = true;
+        else { let on = false; for (const m of g) { if (isActive(m) && !on) { m.active = true; on = true; } else m.active = false; } if (!on) g[0].active = true; }
+        out.push(...g);
+      }
+      sc.pages = out;
+    }
+    return doc;
+  }
+  /** Only what plays: active scene alternatives and active page alternatives. */
+  function activeDoc(doc) {
+    if (!doc.scenes.some(s => s.active === false || s.pages.some(p => p.active === false))) return doc;
+    return Object.assign({}, doc, { scenes: doc.scenes.filter(isActive).map(s => Object.assign({}, s, { pages: s.pages.filter(isActive) })) });
+  }
+  function activePages(doc) { return allPages(activeDoc(doc)); }
+  /** Page labels: active pages are numbered 1…N; an inactive page alternative shows its group number + "·alt"; pages of inactive scene alternatives show "alt". */
+  function pageLabels(doc) {
+    const m = new Map(); let n = 0;
+    for (const s of doc.scenes) {
+      for (const p of s.pages) {
+        if (!isActive(s)) { m.set(p.id, 'alt'); continue; }
+        if (isActive(p)) { n++; m.set(p.id, String(n)); }
+      }
+      for (const p of s.pages) if (isActive(s) && !isActive(p)) { const root = p.altOf || p.id; const act = s.pages.find(q => isActive(q) && (q.id === root || q.altOf === root)); m.set(p.id, (act ? m.get(act.id) : '?') + '·alt'); }
+    }
+    return m;
+  }
+  /** Top-level board items: [{slot, scenes}] in order (a scene without slot is its own item). */
+  function sceneItems(doc) {
+    const items = [];
+    for (const s of doc.scenes) { const last = items[items.length - 1]; if (s.slot && last && last.slot === s.slot) last.scenes.push(s); else items.push({ slot: s.slot || '', scenes: [s] }); }
+    return items;
+  }
+  /** Page groups in one scene: [{root, pages}] */
+  function pageItems(scene) {
+    const items = [];
+    for (const p of scene.pages) { const last = items[items.length - 1]; if (p.altOf && last && last.root.id === p.altOf) last.pages.push(p); else items.push({ root: p, pages: [p] }); }
+    return items;
+  }
+  function setActiveScene(doc, sceneId) { const s = doc.scenes.find(x => x.id === sceneId); if (!s || !s.slot) return doc; for (const x of doc.scenes) if (x.slot === s.slot) x.active = x.id === sceneId; return regroup(doc); }
+  function setActivePage(doc, pageId) {
+    let p = null; for (const s of doc.scenes) for (const q of s.pages) if (q.id === pageId) p = q; if (!p) return doc;
+    const root = p.altOf || p.id; for (const s of doc.scenes) for (const q of s.pages) if (q.id === root || q.altOf === root) q.active = q.id === pageId;
+    return regroup(doc);
+  }
+  const nextLetter = (used) => { for (const c of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') if (!used.includes(c)) return c; return String(used.length + 1); };
+  const letterOf = (l) => (String(l || '').trim().match(/^[A-Z](?=\b|\s|$)/) || [''])[0];
+  /** Duplicate a scene as an inactive alternative in the same slot (new ids; content, takes and logs kept, comments not). Returns the new scene id. */
+  function addSceneAlternative(doc, sceneId) {
+    const s = doc.scenes.find(x => x.id === sceneId); if (!s) return null;
+    if (!s.slot) { s.slot = 'slot_' + s.id.replace(/^s_/, ''); if (!s.altLabel) s.altLabel = 'A ' + s.title; }
+    const members = doc.scenes.filter(x => x.slot === s.slot);
+    const L = nextLetter(members.map(m => letterOf(m.altLabel)));
+    const c = JSON.parse(JSON.stringify(s)); c.id = uid('s'); c.active = false; c.altLabel = L + ' ' + s.title + ' (alt)'; c.title = s.title + ' (alt ' + L + ')';
+    const idMap = new Map(); for (const p of c.pages) { const nid = uid('p'); idMap.set(p.id, nid); p.id = nid; p.comments = []; }
+    for (const p of c.pages) if (p.altOf) p.altOf = idMap.get(p.altOf) || '';
+    doc.scenes.splice(doc.scenes.indexOf(members[members.length - 1]) + 1, 0, c);
+    regroup(doc); return c.id;
+  }
+  /** Duplicate a page as an inactive alternative shot of the same group. Returns the new page id. */
+  function addPageAlternative(doc, pageId) {
+    let sc = null, p = null; for (const s of doc.scenes) for (const q of s.pages) if (q.id === pageId) { sc = s; p = q; } if (!p) return null;
+    const rootId = p.altOf || p.id; const root = sc.pages.find(q => q.id === rootId) || p;
+    const group = sc.pages.filter(q => q.id === rootId || q.altOf === rootId);
+    if (!root.altLabel) root.altLabel = 'A';
+    const L = nextLetter(group.map(q => letterOf(q.altLabel)));
+    const c = JSON.parse(JSON.stringify(p)); c.id = uid('p'); c.altOf = rootId; c.altLabel = L; c.active = false; c.comments = [];
+    sc.pages.splice(sc.pages.indexOf(group[group.length - 1]) + 1, 0, c);
+    regroup(doc); return c.id;
+  }
+  /** Delete a page without orphaning its alternatives: the first alternative becomes the new root (and active if needed). */
+  function removePage(doc, pageId) {
+    for (const s of doc.scenes) {
+      const i = s.pages.findIndex(q => q.id === pageId); if (i < 0) continue;
+      const p = s.pages[i]; const alts = s.pages.filter(q => q.altOf === p.id);
+      if (alts.length) { const nr = alts[0]; nr.altOf = ''; for (const a of alts.slice(1)) a.altOf = nr.id; if (isActive(p)) nr.active = true; }
+      else if (p.altOf && isActive(p)) { const r = s.pages.find(q => q.id === p.altOf); if (r) r.active = true; }
+      s.pages.splice(i, 1);
+    }
+    return regroup(doc);
+  }
+  function removeScene(doc, sceneId) {
+    const s = doc.scenes.find(x => x.id === sceneId); if (!s) return doc;
+    doc.scenes = doc.scenes.filter(x => x !== s);
+    if (s.slot && isActive(s)) { const o = doc.scenes.find(x => x.slot === s.slot); if (o) o.active = true; }
+    return regroup(doc);
+  }
+  /** Move a scene's whole board item (its slot with all alternatives) up or down. */
+  function moveSceneItem(doc, sceneId, delta) {
+    const items = sceneItems(doc); const i = items.findIndex(it => it.scenes.some(s => s.id === sceneId)); const j = i + delta;
+    if (i < 0 || j < 0 || j >= items.length) return doc;
+    [items[i], items[j]] = [items[j], items[i]]; doc.scenes = items.flatMap(it => it.scenes); return doc;
+  }
+  /** Current choices in variant form: {slots:{slot:sceneId}, pages:{rootId:pageId}} (only for real groups). */
+  function currentChoices(doc) {
+    const slots = {}, pages = {};
+    for (const it of sceneItems(doc)) if (it.slot && it.scenes.length > 1) slots[it.slot] = (it.scenes.find(isActive) || it.scenes[0]).id;
+    for (const s of doc.scenes) for (const it of pageItems(s)) if (it.pages.length > 1) pages[it.root.id] = (it.pages.find(isActive) || it.root).id;
+    return { slots, pages };
+  }
+  function applyVariant(doc, v) {
+    if (!v) return doc;
+    for (const [slot, sid] of Object.entries(v.slots || {})) if (doc.scenes.some(s => s.slot === slot && s.id === sid)) for (const s of doc.scenes) if (s.slot === slot) s.active = s.id === sid;
+    const all = []; for (const s of doc.scenes) all.push(...s.pages);
+    for (const [root, pid] of Object.entries(v.pages || {})) if (all.some(p => p.id === pid && (p.id === root || p.altOf === root))) for (const p of all) if (p.id === root || p.altOf === root) p.active = p.id === pid;
+    return regroup(doc);
+  }
+  function withVariant(doc, v) { return applyVariant(JSON.parse(JSON.stringify(doc)), v); }
+  function variantMatches(doc, v) {
+    if (!v) return false; const c = currentChoices(doc);
+    return Object.entries(v.slots || {}).every(([k, x]) => !(k in c.slots) || c.slots[k] === x) && Object.entries(v.pages || {}).every(([k, x]) => !(k in c.pages) || c.pages[k] === x);
+  }
+  /** One CSV for every variant (first column = variant name). */
+  function toCSVAllVariants(doc) {
+    const out = [];
+    for (const v of doc.variants) { const lines = toCSV(withVariant(doc, v)).trim().split('\n'); if (!out.length) out.push('variant,' + lines[0]); for (const l of lines.slice(1)) out.push(csvCell(v.name) + ',' + l); }
+    return out.join('\n') + '\n';
+  }
+  function csvCell(v) { v = v === undefined || v === null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+
+  // ---------- v3: importing a Resolve edit (CSV or CMX3600 EDL) ----------
+  /** "01:00:03:12" (fps), "1:57", "1:57.5", "117.5" -> seconds */
+  function parseTimeAny(v, fps) {
+    if (v === undefined || v === null) return null; const s = String(v).trim(); if (!s) return null;
+    const m = s.match(/^(\d{1,2}):(\d{2}):(\d{2})[:;.](\d{1,3})$/);
+    if (m) return +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / (fps || 24);
+    if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+    return parseTime(s);
+  }
+  /** CMX3600 -> [{n, clip, reel, srcIn, srcOut, recIn, recOut, speed}] (video events; M2 lines set speed; "* FROM CLIP NAME" sets clip) */
+  function parseCMX3600(text, fps) {
+    fps = fps || 24; const ev = []; let cur = null;
+    for (const raw of String(text).split(/\r?\n/)) {
+      const line = raw.trim(); let m;
+      if ((m = line.match(/^(\d{1,6})\s+(\S+)\s+(\S+)\s+(C|D|W\d*|K\S*)\s+(?:(\d+)\s+)?(\d\d:\d\d:\d\d[:;.]\d\d)\s+(\d\d:\d\d:\d\d[:;.]\d\d)\s+(\d\d:\d\d:\d\d[:;.]\d\d)\s+(\d\d:\d\d:\d\d[:;.]\d\d)/))) {
+        if (!/^V|^B|^AA\/V/i.test(m[3])) { cur = null; continue; } // video track only
+        cur = { n: +m[1], reel: m[2], clip: '', srcIn: parseTimeAny(m[6], fps), srcOut: parseTimeAny(m[7], fps), recIn: parseTimeAny(m[8], fps), recOut: parseTimeAny(m[9], fps), speed: 1 };
+        if (m[2] === 'BL' || m[2] === 'BLACK') cur.black = true;
+        ev.push(cur); continue;
+      }
+      if (!cur) continue;
+      if ((m = line.match(/^M2\s+\S+\s+(-?\d+(?:\.\d+)?)/))) { const f = parseFloat(m[1]); cur.speed = Math.round(f / fps * 1000) / 1000 || 1; continue; }
+      if ((m = line.match(/^\*\s*(?:FROM|SOURCE) (?:CLIP NAME|FILE):\s*(.+)$/i))) { if (!cur.clip || /CLIP NAME/i.test(line)) cur.clip = m[1].trim(); continue; }
+    }
+    return ev.filter(e => !e.black).map(e => { if (!e.clip) e.clip = e.reel; const lo = Math.min(e.srcIn, e.srcOut), hi = Math.max(e.srcIn, e.srcOut); e.srcIn = lo; e.srcOut = hi; return e; });
+  }
+  function parseCSVRows(text) {
+    const rows = []; let row = [], cell = '', q = false; const t = String(text).replace(/^\uFEFF/, '');
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (q) { if (c === '"' && t[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; continue; }
+      if (c === '"') q = true; else if (c === ',' || c === ';' || c === '\t') { row.push(cell); cell = ''; } else if (c === '\n' || c === '\r') { if (c === '\r' && t[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; } else cell += c;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(r => r.some(x => x.trim()));
+  }
+  /** Our CSV export or a Resolve/editor CSV (Name / Source In / Source Out / Record In / Record Out / Speed …) -> events */
+  function parseEditCSV(text, fps) {
+    const rows = parseCSVRows(text); if (rows.length < 2) return [];
+    const h = rows[0].map(x => x.trim().toLowerCase().replace(/[^a-z]/g, ''));
+    const col = (...names) => h.findIndex(x => names.includes(x));
+    const ci = { clip: col('clip', 'clipname', 'name', 'filename', 'file', 'sourcefile', 'reelname', 'reel'), si: col('srcin', 'sourcein', 'sourcestart'), so: col('srcout', 'sourceout', 'sourceend'),
+      ri: col('recin', 'recordin', 'recordstart', 'timelinein'), ro: col('recout', 'recordout', 'recordend', 'timelineout'), sp: col('speed', 'speedpercent', 'speedchange'), du: col('duration'), song: col('songin'), songOut: col('songout'), page: col('page') };
+    const spPct = ci.sp >= 0 && /%|percent/i.test(rows[0][ci.sp]); // "Speed %" / "Speed Percent" columns hold 100 = normal
+    return rows.slice(1).map((r, k) => {
+      const g = (i) => (i >= 0 ? r[i] : undefined);
+      let sp = g(ci.sp); let speed = 1; if (sp !== undefined && String(sp).trim()) { const pct = String(sp).match(/(-?\d+(?:\.\d+)?)\s*%/); speed = pct || spPct ? parseFloat(pct ? pct[1] : sp) / 100 || 1 : parseFloat(sp) || 1; }
+      const e = { n: k + 1, clip: String(g(ci.clip) || '').trim(), srcIn: parseTimeAny(g(ci.si), fps), srcOut: parseTimeAny(g(ci.so), fps), recIn: parseTimeAny(g(ci.ri), fps), recOut: parseTimeAny(g(ci.ro), fps), speed, duration: parseTimeAny(g(ci.du), fps) };
+      if (ci.song >= 0 && String(g(ci.song) || '').trim()) e.songIn = parseTimeAny(g(ci.song), fps);
+      if (e.recOut === null && e.recIn !== null && e.duration) e.recOut = e.recIn + e.duration;
+      if (e.srcIn !== null && e.srcOut !== null && e.srcOut < e.srcIn) [e.srcIn, e.srcOut] = [e.srcOut, e.srcIn];
+      return e;
+    }).filter(e => e.clip);
+  }
+  /** Pick the parser by content. */
+  function parseEditList(text, fps) { return /^\s*(TITLE:|FCM:|\d{3,6}\s+\S+\s+V)/m.test(text) && /\d\d:\d\d:\d\d[:;]\d\d/.test(text) ? parseCMX3600(text, fps) : parseEditCSV(text, fps); }
+  /** Match an edit-list clip name to a folder file by name (case-insensitive, extension optional). files: [{path, name}] */
+  function matchClip(clip, files) {
+    const base = String(clip || '').split(/[\\/]/).pop().trim().toLowerCase(); if (!base) return null;
+    const noExt = (x) => x.replace(/\.[a-z0-9]{2,4}$/i, '');
+    return files.find(f => f.name.toLowerCase() === base) || files.find(f => noExt(f.name.toLowerCase()) === noExt(base)) || null;
+  }
+  /** Plan where each event goes. mode 'pages': by song time (record time − recordStart + offset, or the CSV's songIn) onto active linear pages;
+   *  mode 'cuts': all events become the cuts of opts.pageId. Returns {rows:[{ev, media, found, songIn, pageId}], pages:{id:[row…]}} */
+  function planEditImport(doc, events, opts) {
+    opts = opts || {}; const files = opts.files || []; const ad = activeDoc(doc);
+    const firstRec = events.reduce((a, e) => (e.recIn !== null && e.recIn !== undefined ? Math.min(a, e.recIn) : a), Infinity);
+    const recordStart = opts.recordStart !== undefined && opts.recordStart !== null ? opts.recordStart : (firstRec >= 3600 ? 3600 : 0);
+    const offset = opts.offset || 0;
+    const targets = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status === 'cut') continue; const a = parseTime(p.start); if (a === null) continue; let b = parseTime(p.end); if (b === null || b <= a) b = a + pageDuration(p, doc); targets.push({ p, a, b }); }
+    const rows = []; const pages = {};
+    for (const ev of events) {
+      const f = matchClip(ev.clip, files);
+      const media = normMedia(f ? { path: f.path, name: f.name } : { path: ev.clip, name: ev.clip.split(/[\\/]/).pop() });
+      if (ev.srcIn !== null && ev.srcIn !== undefined) media.in = Math.round(ev.srcIn * 1000) / 1000;
+      if (ev.srcOut !== null && ev.srcOut !== undefined && ev.srcOut > (media.in || 0)) media.out = Math.round(ev.srcOut * 1000) / 1000;
+      const v = versionLabel(media.name); if (v) media.version = v;
+      const songIn = ev.songIn !== undefined ? ev.songIn : ev.recIn !== null && ev.recIn !== undefined ? ev.recIn - recordStart + offset : null;
+      let pageId = null;
+      if (opts.mode === 'cuts') pageId = opts.pageId || null;
+      else if (songIn !== null) { const hit = targets.find(t => songIn + 0.01 >= t.a && songIn + 0.01 < t.b); pageId = hit ? hit.p.id : null; }
+      const row = { ev, media, found: !!f, songIn, pageId, duration: ev.recOut !== null && ev.recOut !== undefined && ev.recIn !== null && ev.recIn !== undefined ? Math.round((ev.recOut - ev.recIn) * 1000) / 1000 : (ev.duration || null), speed: ev.speed || 1 };
+      rows.push(row); if (pageId) (pages[pageId] = pages[pageId] || []).push(row);
+    }
+    return { rows, pages, recordStart, offset };
+  }
+  /** Apply a plan. 'pages' mode: one event -> page video with source in/out (+speed); several -> page cuts. 'cuts' mode: events replace the page's cuts. */
+  function applyEditPlan(doc, plan, mode) {
+    for (const [pid, rows] of Object.entries(plan.pages)) {
+      let p = null; for (const s of doc.scenes) for (const q of s.pages) if (q.id === pid) p = q; if (!p) continue;
+      if (mode !== 'cuts' && rows.length === 1) { const r = rows[0]; p.video = Object.assign({}, p.video && p.video.path === r.media.path ? p.video : {}, r.media); p.cuts = []; p.speed = r.speed !== 1 ? r.speed : (p.speed && p.speed !== 1 ? null : p.speed); }
+      else p.cuts = rows.map(r => ({ media: r.media, duration: r.duration && r.duration > 0 ? r.duration : null, speed: r.speed !== 1 ? r.speed : null }));
+    }
+    return doc;
+  }
+
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
 
-  const api = { lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);

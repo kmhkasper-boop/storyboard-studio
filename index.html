@@ -40,12 +40,15 @@
       <button data-act="autolink">🔗 Auto-link media from folder…</button>
       <button data-act="importText">⬇ Import Mirrage text…</button>
       <button data-act="cast">👥 Cast manager…</button>
+      <button data-act="variants">⇄ Variants…</button>
+      <button data-act="importEdit">⬇ Import cut list (CSV / EDL)…</button>
       <hr>
       <button data-act="downloadJson">💾 Download storyboard JSON</button>
       <button data-act="exportMd">📝 Export Markdown (Mirrage format)</button>
       <button data-act="exportCsv">📊 Export edit list CSV (Resolve)</button>
       <button data-act="exportEdl">🎬 Export EDL (CMX3600)</button>
       <button data-act="exportEdlText">📃 Export edit list (text)</button>
+      <button data-act="exportAllVariants">⇄ Export all variants (CSV + EDLs)</button>
       <button data-act="print">🖨 Print / PDF</button>
       <hr>
       <button data-act="settings">⚙ Project settings…</button>
@@ -60,6 +63,7 @@
   <select id="fChar" aria-label="Filter by character"><option value="">All characters</option></select>
   <label class="zoom" title="Card size">🔍<input id="zoom" type="range" min="140" max="420" step="10" value="240"></label>
   <label class="chk" title="Show lyrics and description on cards"><input type="checkbox" id="showText" checked> text</label>
+  <span id="variantWrap" hidden><select id="variantSel" aria-label="Variant" title="Variant: a named set of active alternatives"></select><button id="btnVariants" title="Manage variants">⇄</button></span>
   <div class="spacer"></div>
   <button id="btnAddScene">+ Scene</button>
 </div>
