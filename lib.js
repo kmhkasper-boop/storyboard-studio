@@ -1003,10 +1003,34 @@
   /** Pick the parser by content. */
   function parseEditList(text, fps) { return /^\s*(TITLE:|FCM:|\d{3,6}\s+\S+\s+V)/m.test(text) && /\d\d:\d\d:\d\d[:;]\d\d/.test(text) ? parseCMX3600(text, fps) : parseEditCSV(text, fps); }
   /** Match an edit-list clip name to a folder file by name (case-insensitive, extension optional). files: [{path, name}] */
+  /** Match an edit clip name to a file by name (case-insensitive; extension may differ). Several hits: prefer files inside the storyboard folder
+   *  (no "../"), then the shallowest path, then exact extension. */
   function matchClip(clip, files) {
     const base = String(clip || '').split(/[\\/]/).pop().trim().toLowerCase(); if (!base) return null;
     const noExt = (x) => x.replace(/\.[a-z0-9]{2,4}$/i, '');
-    return files.find(f => f.name.toLowerCase() === base) || files.find(f => noExt(f.name.toLowerCase()) === noExt(base)) || null;
+    const rank = (f) => ((f.path || '').startsWith('../') ? 1000 : 0) + (f.path || f.name).split('/').length;
+    const pick = (list) => list.length ? list.slice().sort((a, b) => rank(a) - rank(b))[0] : null;
+    return pick(files.filter(f => f.name.toLowerCase() === base)) || pick(files.filter(f => noExt(f.name.toLowerCase()) === noExt(base)));
+  }
+  const MEDIA_RE = /\.(jpe?g|png|webp|gif|avif|bmp|mp4|m4v|mov|webm)$/i;
+  /** v3.2: recursive folder walk over a File System Access-style directory handle (anything with async entries() of [name, handle{kind}]).
+   *  Skips dot files (incl. macOS ._ files), node_modules and .app bundles. Returns [{path, name, handle}] with "/" paths. */
+  async function walkDir(dir, opts, prefix, depth, out) {
+    opts = opts || {}; prefix = prefix || ''; depth = depth || 0; out = out || [];
+    if (depth > (opts.maxDepth || 8)) return out; const keep = opts.filter || MEDIA_RE;
+    for await (const [name0, h] of dir.entries()) {
+      const name = String(name0).normalize('NFC');
+      if (name.startsWith('.') || name === 'node_modules' || name.endsWith('.app')) continue;
+      const path = (prefix ? prefix + '/' : '') + name;
+      if (h.kind === 'directory') await walkDir(h, opts, path, depth + 1, out);
+      else if (keep.test(name)) out.push({ path, name, handle: h });
+    }
+    return out;
+  }
+  /** v3.2: paths from the opened root -> media list relative to the storyboard's folder (base), for matchClip. */
+  function folderMediaIndex(paths, base) {
+    base = base || ''; const rel = (full) => !base ? full : full.startsWith(base + '/') ? full.slice(base.length + 1) : '../'.repeat(base.split('/').length) + full;
+    return paths.map(p => typeof p === 'string' ? p : p.path).filter(p => MEDIA_RE.test(p)).map(p => ({ path: rel(p), name: p.split('/').pop() }));
   }
   /** Plan where each event goes. mode 'pages': by song time (record time − recordStart + offset, or the CSV's songIn) onto active linear pages;
    *  mode 'cuts': all events become the cuts of opts.pageId. Returns {rows:[{ev, media, found, songIn, pageId}], pages:{id:[row…]}} */
@@ -1034,7 +1058,11 @@
     const offset = opts.offset || 0; const bm = boardMedia(doc);
     const targets = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status === 'cut') continue; const a = parseTime(p.start); if (a === null) continue; let b = parseTime(p.end); if (b === null || b <= a) b = a + pageDuration(p, doc); targets.push({ p, a, b }); }
     const edges = [...new Set(targets.flatMap(t => [t.a, t.b]))];
-    const snapTo = (x) => { let best = x, bd = snap + 1e-6; for (const e of edges) { const d = Math.abs(e - x); if (d <= bd) { bd = d; best = e; } } return best; };
+    const nearestEdge = (x) => { let best = null, bd = snap + 1e-6; for (const e of edges) { const d = Math.abs(e - x); if (d <= bd) { bd = d; best = e; } } return best; };
+    // cut / bridged pages with song time: events inside them get a neighbour suggestion
+    const holes = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status !== 'cut') continue; const a = parseTime(p.start), b = parseTime(p.end); if (a !== null && b !== null && b > a) holes.push({ p, a, b }); }
+    const reject = new Set((opts.reject || []).map(Number)); const suggest = opts.suggest !== false;
+    const ovl = (a, b, t) => Math.min(b, t.b) - Math.max(a, t.a);
     const rows = []; const pages = {}; const excluded = [];
     for (const ev of events) {
       const f = matchClip(ev.clip, files); const onBoard = matchBoard(ev, bm);
@@ -1049,21 +1077,40 @@
       const songIn = ev.songIn !== undefined && ev.songIn !== null ? ev.songIn : hasRec ? ev.recIn - recordStart + offset : null;
       const duration = hasRec && ev.recOut !== null && ev.recOut !== undefined ? Math.round((ev.recOut - ev.recIn) * 1000) / 1000 : (ev.duration || null);
       const songOut = songIn !== null && duration ? songIn + duration : null;
-      const row = { ev, media, found: !!f, onBoard: !!onBoard, songIn, songOut, pageId: null, duration, speed: ev.speed || 1, speedInfo: ev.speedInfo || null, snapped: 0 };
+      const row = { ev, media, found: !!f, onBoard: !!onBoard, songIn, songOut, pageId: null, duration, speed: ev.speed || 1, speedInfo: ev.speedInfo || null, snapped: { start: 0, end: 0 }, suggestion: null, suggested: false };
       if (opts.onlyBoard && !onBoard) { excluded.push(row); rows.push(Object.assign(row, { excluded: true })); continue; }
       if (opts.mode === 'cuts') row.pageId = opts.pageId || null;
       else if (songIn !== null) {
-        const a0 = snapTo(songIn), b0 = songOut !== null ? snapTo(songOut) : null; row.snapped = Math.round((a0 - songIn) * 1000) / 1000;
-        let best = null, bo = 0;
-        if (b0 !== null && b0 > a0) for (const t of targets) { const o = Math.min(b0, t.b) - Math.max(a0, t.a); if (o > bo + 1e-6) { bo = o; best = t; } }
-        if (!best) best = targets.find(t => a0 + 0.001 >= t.a && a0 + 0.001 < t.b) || null;
+        // v3.2 snapping: only for alignment and tie-breaks. Events shorter than 2 × snap get at most one edge snapped (the closer one), so they never collapse.
+        const a = songIn, b = songOut !== null && songOut > songIn ? songOut : null;
+        let ea = nearestEdge(a), eb = b !== null ? nearestEdge(b) : null;
+        if (b !== null && ea !== null && eb !== null && (b - a < 2 * snap || eb <= ea)) { if (Math.abs(ea - a) <= Math.abs(eb - b)) eb = null; else ea = null; }
+        const a0 = ea !== null ? ea : a, b0 = b === null ? null : eb !== null ? eb : b;
+        row.snapped = { start: Math.round((a0 - a) * 1000) / 1000, end: b === null ? 0 : Math.round((b0 - b) * 1000) / 1000 };
+        let best = null;
+        if (b !== null) {
+          // majority on the raw, unsnapped times; ties (within half a frame) are broken by the snapped overlap, then the earlier page
+          const sc = targets.map(t => ({ t, raw: ovl(a, b, t), sn: ovl(a0, b0, t) })).filter(x => x.raw > 1e-6);
+          const top = sc.reduce((m, x) => Math.max(m, x.raw), 0); const tied = sc.filter(x => x.raw >= top - 0.5 / fps);
+          if (tied.length) best = tied.reduce((m, x) => (x.sn > m.sn + 1e-6 ? x : m), tied[0]).t;
+        }
+        if (!best) best = targets.find(t => a + 0.001 >= t.a && a + 0.001 < t.b) || null;
         row.pageId = best ? best.p.id : null;
+        if (!row.pageId && targets.length) { // v3.2: inside a cut/bridged page (or outside every page): suggest the nearest neighbour by time
+          const e2 = b !== null ? b : a; const mid = (a + e2) / 2;
+          const hole = holes.find(h => (b !== null ? ovl(a, e2, h) > 1e-6 : a >= h.a && a < h.b)) || holes.find(h => mid >= h.a && mid <= h.b);
+          const dist = (t) => (e2 <= t.a ? t.a - e2 : a >= t.b ? a - t.b : 0);
+          const nb = targets.reduce((m, t) => (!m || dist(t) < dist(m) - 1e-6 ? t : m), null);
+          if (nb) {
+            row.suggestion = { pageId: nb.p.id, distance: Math.round(dist(nb) * 1000) / 1000, inside: hole ? hole.p.id : '', bridged: !!(hole && hole.p.bridged) };
+            if (hole && suggest && !reject.has(ev.n)) { row.pageId = nb.p.id; row.suggested = true; }
+          }
+        }
       }
       rows.push(row); if (row.pageId) (pages[row.pageId] = pages[row.pageId] || []).push(row);
     }
     const overruns = {};
     for (const [pid, rs] of Object.entries(pages)) {
-      if (opts.mode !== 'cuts' && rs.length < 2) continue;
       const p = allPages(doc).find(q => q.id === pid); const o = p && cutsOverrun(Object.assign({}, p, { cuts: rs.map(r => ({ duration: r.duration })) }), doc);
       if (o) overruns[pid] = o;
     }
@@ -1074,7 +1121,13 @@
     opts = opts || {};
     for (const [pid, rows] of Object.entries(plan.pages)) {
       let p = null; for (const s of doc.scenes) for (const q of s.pages) if (q.id === pid) p = q; if (!p) continue;
-      if (mode !== 'cuts' && rows.length === 1) { const r = rows[0]; p.video = Object.assign({}, p.video && p.video.path === r.media.path ? p.video : {}, r.media); p.cuts = []; p.speed = r.speed !== 1 ? r.speed : (p.speed && p.speed !== 1 ? null : p.speed); }
+      const single = mode !== 'cuts' && rows.length === 1 && plan.overruns && plan.overruns[pid];
+      if (single && opts.trimOverruns) { // v3.2: one event longer than the page, trimmed: video out = in + page × |speed|
+        const r = rows[0]; const m = Object.assign({}, r.media); const need = pageDuration(p, doc) * Math.abs(r.speed || 1);
+        m.out = Math.round(((m.in || 0) + need) * 1000) / 1000; p.video = m; p.cuts = []; p.speed = r.speed !== 1 ? r.speed : (p.speed && p.speed !== 1 ? null : p.speed);
+      } else if (single) { // v3.2: keep the real duration as one cut so the overrun shows and can be trimmed / stretched later
+        const r = rows[0]; p.cuts = [{ media: r.media, duration: r.duration, speed: r.speed !== 1 ? r.speed : null }];
+      } else if (mode !== 'cuts' && rows.length === 1) { const r = rows[0]; p.video = Object.assign({}, p.video && p.video.path === r.media.path ? p.video : {}, r.media); p.cuts = []; p.speed = r.speed !== 1 ? r.speed : (p.speed && p.speed !== 1 ? null : p.speed); }
       else { p.cuts = rows.map(r => ({ media: r.media, duration: r.duration && r.duration > 0 ? r.duration : null, speed: r.speed !== 1 ? r.speed : null })); if (opts.trimOverruns) trimCutsToFit(p, doc); }
     }
     return doc;
@@ -1082,6 +1135,6 @@
 
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
 
-  const api = { resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);

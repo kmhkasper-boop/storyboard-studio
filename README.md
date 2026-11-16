@@ -46,7 +46,9 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
 - **Variants (v3):** the toolbar picker switches between named sets of choices (e.g. *Album cut* / *Director's cut*). ⇄ Variants… saves the current choices as a variant, updates, renames or deletes one, and exports the CSV/EDL of one variant or of all of them.
 - **Import a Resolve edit (v3, ☰ → Import cut list):** paste or choose a CSV or CMX3600 EDL. Clips are matched by file name to the media in your folder (all subfolders), and events land on pages by record time against the song time, or into the selected page's cuts. You see a preview first; ⌘Z undoes it.
   - **v3.1 speed:** Resolve's `M2 050.0` now imports as 50 % slow motion, not 2×. The `* SPEED:` comment wins, then source ÷ record duration; M2 is only a hint. Reverse is kept. The preview shows each speed and highlights values that disagree (⚠).
-  - **v3.1 page assignment:** each event goes to the page holding most of it, after snapping edges within **4 frames** (adjustable) of a page boundary.
+  - **Page assignment (v3.2):** each event goes to the page holding most of it, judged on the real times. Snapping to page edges within **4 frames** (adjustable) only aligns edges and breaks ties, and short events never collapse. The preview shows both snap deltas.
+  - **Inside cut pages (v3.2):** events that fall inside a cut or bridged page get a ticked suggestion for the nearest page. Untick it to leave the event unassigned.
+  - **Single-event overruns (v3.2):** an event longer than its page is flagged and kept as one cut, so you can trim or stretch it.
   - **v3.1 options:** **only clips that match existing board media** (excluded clips such as CO_/BP_/STILL_ are counted and listed) and **trim last cut to fit**.
   - A sample edit is in `sample-project/edits/`.
 - **Cut overruns and source checks (v3.1):** when the cuts add up to more than the page, the card shows **✂ +0.208s over**, and the drawer offers **trim last cut to fit** or **stretch page**. Each cut is also checked against its clip's out point and generation length (a **gen** field per cut, or the Gen length of a page using the same clip).

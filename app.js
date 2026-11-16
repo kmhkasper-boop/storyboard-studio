@@ -903,7 +903,7 @@
     box.append(cutsBox(p), el('div', { class: 'btns' }, el('button', { class: 'cut-import', onclick: () => importEditDialog({ mode: 'cuts', pageId: p.id }) }, '⬇ Import cuts from CSV / EDL…')));
     return box;
   }
-  function folderFiles() { return Array.from(local.files.values()).filter(e => VID_EXT.test(e.name) || IMG_EXT.test(e.name)).map(e => ({ path: relFromBase(e.path), name: e.name })); }
+  function folderFiles() { return S.folderMediaIndex(Array.from(local.files.keys()), local.base); } // v3.2: matching logic lives in lib.js (tested headless)
   /** Import a Resolve edit (CSV or CMX3600 EDL): preview, then apply onto pages by song time, or into one page's cuts. */
   function importEditDialog(opts = {}) {
     const ta = el('textarea', { rows: 7, class: 'ie-text', placeholder: 'Paste an EDL (CMX3600) or a CSV here, or choose a file…' });
@@ -914,7 +914,7 @@
     mode.value = opts.mode || 'pages';
     const off = el('input', { class: 'ie-offset', value: '0:00', style: { width: '80px' }, title: 'Song time at the start of the record timeline (01:00:00:00 or 00:00:00:00)' });
     const snapF = el('input', { type: 'number', min: '0', step: '1', value: '4', class: 'ie-snap', style: { width: '60px' }, title: 'Event edges within this many frames of a page boundary snap to it' });
-    const onlyB = el('input', { type: 'checkbox', class: 'ie-only' }); const trimO = el('input', { type: 'checkbox', class: 'ie-trim' });
+    const onlyB = el('input', { type: 'checkbox', class: 'ie-only' }); const sugg = el('input', { type: 'checkbox', class: 'ie-suggest', checked: true }); sugg.checked = true; const rejected = new Set(); const trimO = el('input', { type: 'checkbox', class: 'ie-trim' });
     const out = el('div', { class: 'ie-out' }); let plan = null;
     const preview = () => {
       out.innerHTML = '';
@@ -922,25 +922,33 @@
       if (!evs.length) { out.append(el('p', { class: 'muted' }, ta.value.trim() ? 'No events found. Expecting a CMX3600 EDL or a CSV with clip / source in / out / record in columns.' : '')); plan = null; return; }
       const pid = opts.pageId || selected;
       if (mode.value === 'cuts' && !pid) { out.append(el('p', { class: 'ed-warn' }, 'Select a page first.')); plan = null; return; }
-      plan = S.planEditImport(doc, evs, { mode: mode.value, pageId: pid, offset: S.parseTime(off.value) || 0, files: folderFiles(), fps: parseFloat(fps.value) || 24, snapFrames: parseFloat(snapF.value) >= 0 ? parseFloat(snapF.value) : 4, onlyBoard: onlyB.checked });
+      plan = S.planEditImport(doc, evs, { mode: mode.value, pageId: pid, offset: S.parseTime(off.value) || 0, files: folderFiles(), fps: parseFloat(fps.value) || 24, snapFrames: parseFloat(snapF.value) >= 0 ? parseFloat(snapF.value) : 4, onlyBoard: onlyB.checked, suggest: sugg.checked, reject: [...rejected] });
       const labels = S.pageLabels(doc); const assigned = plan.rows.filter(r => r.pageId).length;
       const spd = (r) => { const i = r.speedInfo; const t = (r.speed < 0 ? '◀ ' : '') + Math.round(Math.abs(r.speed) * 1000) / 10 + '%';
         const tip = i ? 'from ' + ({ comment: '* SPEED comment', ratio: 'source ÷ record duration', m2: 'M2 (' + i.m2Kind + ')', default: 'default' })[i.from] + ' · comment ' + (i.values.comment ?? '–') + ' · src/rec ' + (i.values.ratio ?? '–') + ' · M2 ' + (i.m2Raw ?? '–') + (i.m2Kind ? ' read as ' + i.m2Kind + ' = ' + i.values.m2 : '') + (i.conflict ? ' · DISAGREE: ' + i.conflicts.join(', ') : '') : '';
         return el('td', { class: 'ie-speed' + (i && i.conflict ? ' disagree' : ''), title: tip }, t + (i && i.conflict ? ' ⚠' : '')); };
+      const fr = (x) => (x > 0 ? '+' : '−') + Math.abs(Math.round(x * plan.fps)) + 'f';
+      const snapTd = (r) => { const a = r.snapped.start, b = r.snapped.end; const t = (a ? 'in ' + fr(a) : '') + (a && b ? ' ' : '') + (b ? 'out ' + fr(b) : '');
+        return el('td', { class: 'ie-song', title: t ? 'Snapped to the page boundary: ' + t + ' (alignment and tie-breaks only; the page is chosen by the unsnapped majority)' : '' }, (r.songIn !== null ? S.fmtTime(r.songIn, true) + (r.songOut !== null ? '–' + S.fmtTime(r.songOut, true) : '') : '') + (t ? ' ⇥' + t : '')); };
       const ex = plan.excluded; const grp = {}; for (const r of ex) { const k = (r.ev.clip.split(/[\\/]/).pop().match(/^[A-Za-z]+_/) || ['other'])[0]; grp[k] = (grp[k] || 0) + 1; }
+      const ns = plan.rows.filter(r => r.suggestion && r.suggestion.inside).length;
       out.append(el('p', null, plan.rows.length + ' events · ' + assigned + ' assigned · ' + plan.rows.filter(r => r.found).length + ' matched to files in the folder · ' + plan.rows.filter(r => r.onBoard).length + ' on the board' + (local.kind ? '' : ' (no folder open: clip names are kept as paths)')),
         ex.length ? el('details', { class: 'ie-excluded' }, el('summary', null, ex.length + ' excluded (not on the board): ' + Object.entries(grp).map(([k, n]) => k + ' ×' + n).join(', ')), el('div', { class: 'muted' }, ex.map(r => '#' + r.ev.n + ' ' + r.ev.clip).join(' · '))) : null,
+        ns ? el('p', { class: 'ie-sugg-sum' }, ns + ' event(s) fall inside cut/bridged pages: ' + plan.rows.filter(r => r.suggested).length + ' assigned to the nearest page (suggestion), ' + (ns - plan.rows.filter(r => r.suggested).length) + ' left unassigned.') : null,
         Object.keys(plan.overruns).length ? el('p', { class: 'ed-warn ie-overruns' }, '✂ Overrun: ' + Object.entries(plan.overruns).map(([id, o]) => 'page ' + labels.get(id) + ' cuts ' + o.total + ' s on ' + (Math.round(o.page * 1000) / 1000) + ' s (+' + o.over + ' s)').join(' · ') + '. Tick "trim last cut to fit", or fix it later in the drawer.') : null,
         el('table', { class: 'ie-table' }, el('tr', null, ['#', 'clip', 'file', 'src in–out', 'speed', 'song', '→ page'].map(h => el('th', null, h))),
           plan.rows.filter(r => !r.excluded).map(r => el('tr', { class: (r.pageId ? '' : 'unassigned') + (plan.overruns[r.pageId] ? ' over' : ''), dataset: { n: r.ev.n } }, el('td', null, String(r.ev.n)), el('td', null, r.ev.clip), el('td', null, r.found ? '✓ ' + r.media.path : r.onBoard ? '☁ on board: ' + (r.media.path || r.media.driveId) : '✗ not found'),
-            el('td', null, (r.media.in ?? '') + '–' + (r.media.out ?? '')), spd(r), el('td', { title: r.snapped ? 'snapped ' + Math.round(r.snapped * plan.fps) + ' frame(s) to the page boundary' : '' }, (r.songIn !== null ? S.fmtTime(r.songIn, true) : '') + (r.snapped ? ' ⇥' + (r.snapped > 0 ? '+' : '') + Math.round(r.snapped * plan.fps) + 'f' : '')),
-            el('td', null, r.pageId ? labels.get(r.pageId) + (plan.pages[r.pageId].length > 1 ? ' (cut ' + (plan.pages[r.pageId].indexOf(r) + 1) + ')' : '') : '—')))),
+            el('td', null, (r.media.in ?? '') + '–' + (r.media.out ?? '')), spd(r), snapTd(r),
+            el('td', { class: 'ie-page' }, r.pageId ? labels.get(r.pageId) + (plan.pages[r.pageId].length > 1 ? ' (cut ' + (plan.pages[r.pageId].indexOf(r) + 1) + ')' : '') : '—',
+              r.suggestion && r.suggestion.inside ? el('label', { class: 'ie-sugg', title: 'Falls inside ' + (r.suggestion.bridged ? 'bridged ' : '') + 'cut page ' + labels.get(r.suggestion.inside) + '. Suggested: nearest page by time (' + r.suggestion.distance + ' s away). Untick to leave it unassigned.' },
+                (() => { const cb = el('input', { type: 'checkbox', class: 'ie-sugg-cb' }); cb.checked = r.suggested; cb.disabled = !sugg.checked; cb.onchange = () => { if (cb.checked) rejected.delete(r.ev.n); else rejected.add(r.ev.n); preview(); }; return cb; })(),
+                ' → ' + labels.get(r.suggestion.pageId) + ' (in cut ' + labels.get(r.suggestion.inside) + ')') : null)))),
         el('p', { class: 'muted' }, mode.value === 'cuts' ? 'Apply replaces the page\u2019s cuts with these events.' : 'A page that gets one event: its video and source in/out are set. A page that gets several: they become its cuts.'));
     };
-    [ta, fps, mode, off, snapF, onlyB].forEach(x => x.addEventListener(x === ta ? 'input' : 'change', preview));
+    [ta, fps, mode, off, snapF, onlyB, sugg].forEach(x => x.addEventListener(x === ta ? 'input' : 'change', preview));
     const box = el('div', { class: 'import-edit' }, el('h2', null, '⬇ Import cut list (CSV / EDL)'), ta, el('div', { class: 'row' }, file),
       el('div', { class: 'row' }, el('label', null, 'Mode ', mode), el('label', null, 'fps ', fps), el('label', null, 'record start = song ', off), el('label', null, 'snap ', snapF, ' frames')),
-      el('div', { class: 'row' }, el('label', { title: 'Match by file name or Drive ID against media already on the board; skip the rest (e.g. CO_, BP_, STILL_ clips)' }, onlyB, ' only clips that match existing board media'), el('label', null, trimO, ' trim last cut to fit on overrun')), out,
+      el('div', { class: 'row' }, el('label', { title: 'Match by file name or Drive ID against media already on the board; skip the rest (e.g. CO_, BP_, STILL_ clips)' }, onlyB, ' only clips that match existing board media'), el('label', null, trimO, ' trim last cut to fit on overrun'), el('label', { title: 'Events inside a cut or bridged page go to the nearest page by time. Untick here (or per row) to leave them unassigned.' }, sugg, ' assign events inside cut pages to the nearest page')), out,
       el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), el('button', { class: 'ie-preview', onclick: preview }, 'Preview'),
         el('button', { class: 'primary ie-apply', onclick: () => { if (!plan || !Object.keys(plan.pages).length) return toast('Nothing to apply'); const m = mode.value; const tr = trimO.checked; mutate(d => { S.applyEditPlan(d, plan, m, { trimOverruns: tr }); }); closeModal(); toast('Applied ' + plan.rows.filter(r => r.pageId).length + ' events to ' + Object.keys(plan.pages).length + ' page(s). Undo with Ctrl/Cmd+Z.', 4000); } }, 'Apply')));
     modal(box, { wide: true });
@@ -1241,15 +1249,7 @@
     Object.assign(local, { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false });
     remoteBase = null;
   }
-  async function walk(dir, prefix, depth, out) {
-    if (depth > 8) return;
-    for await (const [name, h] of dir.entries()) {
-      if (name.startsWith('.') || name === 'node_modules' || name.endsWith('.app')) continue;
-      const path = (prefix ? prefix + '/' : '') + name.normalize('NFC');
-      if (h.kind === 'directory') await walk(h, path, depth + 1, out);
-      else if (IMG_EXT.test(name) || VID_EXT.test(name) || AUD_EXT.test(name) || /\.json$/i.test(name)) out.push({ path, name: name.normalize('NFC'), handle: h });
-    }
-  }
+  async function walk(dir, prefix, depth, out) { return S.walkDir(dir, { filter: { test: (n) => IMG_EXT.test(n) || VID_EXT.test(n) || AUD_EXT.test(n) || /\.json$/i.test(n) } }, prefix, depth, out); }
   function indexEntries(entries) {
     local.files = new Map(); local.lower = new Map();
     for (const e of entries) {

@@ -1,4 +1,4 @@
-# Storyboard file format v3.1 (for Mirrage)
+# Storyboard file format v3.2 (for Mirrage)
 
 Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive project folder of a video. Lucas edits it in the app; you (Mirrage) read and edit the same file with the Drive connector. There is no database and no hidden state: **the file is the storyboard.**
 
@@ -6,6 +6,13 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **What's new in v3.2** (no new fields, still `"version": 3`):
+> - **Import assignment:** the majority is computed on the raw times; snapping only aligns edges and breaks ties.
+> - **Overruns:** single events are checked too.
+> - **Snap deltas:** both start and end are shown.
+> - **Events inside cut/bridged pages:** a nearest-page suggestion.
+> - **Folder matching:** now in `lib.js` (`walkDir`, `folderMediaIndex`, `matchClip`) and tested headless.
+>
 > **What's new in v3.1** (still `"version": 3`; both new fields are optional):
 > - page `bridged: true`: a page with status `cut` whose song time the real edit bridged. The gap check treats its time as covered.
 > - media `genSeconds` (mostly on cut media): the generation length of that clip, used by the per-cut source check.
@@ -270,8 +277,13 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
   - Our own EDL export writes `* SPEED:` too, so it round-trips.
 - **CSV:** our own export, or a Resolve-style list with *Name/Clip, Source In, Source Out, Record In, Record Out, Speed (%), Duration*. Timecodes (`hh:mm:ss:ff`), `m:ss` and seconds all work.
 - **Clip matching:** by **file name** against the media in the open folder (case-insensitive; the extension may differ, e.g. `.mov` → `.mp4`). Unmatched clips keep the clip name as their `path`.
-- **Only clips on the board (v3.1, option):** keeps only events whose clip matches media already on the board, in any page, cut or take, by file name or Drive ID. The excluded events (e.g. `CO_`, `BP_`, `STILL_` clips) are counted by prefix and listed. Folder matching searches all subfolders of the opened folder.
-- **Mode "pages by song time":** record time minus the record start (01:00:00:00 when the edit starts there, else 0), plus the song offset you enter, gives the song time. **v3.1:** an event edge within the **snap** tolerance of a page boundary (default 4 frames) snaps to it. The event then goes to the active, non-`cut` page that holds **most of its duration**, so an event starting 3 frames before page 16 lands on page 16. The preview marks snapped events (`⇥+3f`) and flags pages whose cuts would overrun; an option trims them on apply. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
+- **Only clips on the board (v3.1, option):** keeps only events whose clip matches media already on the board, in any page, cut or take, by file name or Drive ID. The excluded events (e.g. `CO_`, `BP_`, `STILL_` clips) are counted by prefix and listed. Folder matching searches all subfolders of the opened folder (dot and `._` files skipped). When the same name exists more than once, files inside the storyboard's folder win, then the shallowest path.
+- **Mode "pages by song time":** record time minus the record start (01:00:00:00 when the edit starts there, else 0), plus the song offset you enter, gives the song time. **Assignment (v3.2):**
+  - **Majority.** Each event goes to the active, non-`cut` page that holds **most of its unsnapped duration**. Example: a 5-frame tail 2:51:21–2:52:02 with 3 frames on page 16 lands on page 16.
+  - **Snapping.** Edges within the **snap** tolerance of a page boundary (default 4 frames, adjustable) are aligned to it. This is used only to break ties (within half a frame), e.g. an event 3 frames before and 3 after a boundary goes to the page it snaps into; after that, the earlier page wins. An event shorter than 2 × snap gets at most one edge snapped (the nearer one), so no event ever collapses to zero length.
+  - **Preview marks.** The preview shows both snap deltas (`⇥in +3f out −2f`; the plan keeps them as `snapped: {start, end}` in seconds).
+  - **Overruns.** The preview flags every page whose events add up to more than the page, **including a page with a single event**. On apply, an overrunning single event is stored as **one cut** with its real duration, so the card shows the overrun and the drawer can trim or stretch it. With *trim last cut to fit* ticked, it becomes the page video with `out = in + page length × |speed|`.
+  - **Inside cut pages.** An event that falls inside the song time of a `cut` (or bridged) page has no page of its own. The preview **suggests the nearest page by time** (ticked by default). Untick it per row, or switch suggestions off, to leave the event unassigned. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
 - **Mode "into the selected page's cuts":** all events replace that page's `cuts`, with per-cut `duration` and `speed`.
 
 ## Rules for editing safely
