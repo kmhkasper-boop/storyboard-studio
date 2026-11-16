@@ -278,3 +278,9 @@ table.kv td{padding:4px;vertical-align:top}
 #variantWrap{display:inline-flex;gap:4px;align-items:center}#variantSel{max-width:220px}
 .vrow{display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:6px;border:1px solid var(--line);border-radius:8px}.vrow.on{border-color:var(--acc,#ffb84d)}.vrow input{flex:1}
 #sceneList li.slot .nm{font-style:italic}
+/* v3.1 */
+.chip.overrun{background:#5a2a12;color:#ffcfa8}.chip.bridged{background:#203a2c;color:#bfe9cf}
+.cut.warn{outline:1px solid #e0743a;border-radius:6px}.cut .cut-genSeconds{width:52px}
+.ie-speed.disagree{background:#6b2a14;color:#ffd9c2;font-weight:700}
+.ie-table tr.over td{border-bottom-color:#e0743a}.ie-excluded{margin:4px 0;font-size:12px}
+.bridged-row{display:block;font-size:12.5px;margin:-2px 0 8px}

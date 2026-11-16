@@ -1,0 +1,39 @@
+TITLE: Paper Moon Timeline 1
+FCM: NON-DROP FRAME
+
+001  AX       V     C        00:00:00:00 00:00:02:00 01:00:00:00 01:00:04:00
+M2   AX       050.0                00:00:00:00
+* FROM CLIP NAME: clip-03_v2.mp4
+
+002  AX       V     C        00:00:00:00 00:00:01:14 01:00:04:00 01:00:08:00
+M2   AX       040.0                00:00:00:00
+* FROM CLIP NAME: clip-05_v2.mp4
+* SPEED: 40%
+
+003  AX       V     C        00:00:01:00 00:00:05:00 01:00:08:00 01:00:12:00
+M2   AX       050.0                00:00:01:00
+* FROM CLIP NAME: clip-03_v2.mp4
+* SPEED: 50%
+
+004  AX       V     C        00:00:00:00 00:00:04:00 01:00:12:00 01:00:16:00
+M2   AX       -100.0               00:00:00:00
+* FROM CLIP NAME: clip-05.mp4
+* SPEED: -100%
+
+005  AX       V     C        00:00:00:00 00:00:00:06 01:00:19:21 01:00:20:03
+* FROM CLIP NAME: clip-05.mp4
+
+006  AX       V     C        00:00:00:00 00:00:01:21 01:00:20:03 01:00:22:00
+* FROM CLIP NAME: page-06.jpg
+
+007  AX       V     C        00:00:01:00 00:00:03:02 01:00:22:00 01:00:24:02
+* FROM CLIP NAME: clip-03_v2.mp4
+
+008  AX       V     C        00:00:00:00 00:00:03:22 01:00:24:02 01:00:28:00
+* FROM CLIP NAME: CO_crowd_02.mp4
+
+009  AX       V     C        00:00:00:00 00:00:04:00 01:00:28:00 01:00:32:00
+* FROM CLIP NAME: STILL_logo.png
+
+010  AX       V     C        00:00:00:00 00:00:04:00 01:00:32:00 01:00:36:00
+* FROM CLIP NAME: BP_bonus_v3.mov

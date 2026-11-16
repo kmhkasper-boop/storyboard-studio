@@ -44,7 +44,13 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
   - Inactive ones are dimmed (scenes fold; "show" unfolds them), keep their comments and takes, and are never deleted.
   - Play, runtime, gaps, exports and script view use only the active ones. Print asks whether to include the alternatives.
 - **Variants (v3):** the toolbar picker switches between named sets of choices (e.g. *Album cut* / *Director's cut*). ⇄ Variants… saves the current choices as a variant, updates, renames or deletes one, and exports the CSV/EDL of one variant or of all of them.
-- **Import a Resolve edit (v3, ☰ → Import cut list):** paste or choose a CSV or CMX3600 EDL. Clips are matched by file name to the media in your folder, and events land on pages by record time against the song time, or into the selected page's cuts. You see a preview first; ⌘Z undoes it.
+- **Import a Resolve edit (v3, ☰ → Import cut list):** paste or choose a CSV or CMX3600 EDL. Clips are matched by file name to the media in your folder (all subfolders), and events land on pages by record time against the song time, or into the selected page's cuts. You see a preview first; ⌘Z undoes it.
+  - **v3.1 speed:** Resolve's `M2 050.0` now imports as 50 % slow motion, not 2×. The `* SPEED:` comment wins, then source ÷ record duration; M2 is only a hint. Reverse is kept. The preview shows each speed and highlights values that disagree (⚠).
+  - **v3.1 page assignment:** each event goes to the page holding most of it, after snapping edges within **4 frames** (adjustable) of a page boundary.
+  - **v3.1 options:** **only clips that match existing board media** (excluded clips such as CO_/BP_/STILL_ are counted and listed) and **trim last cut to fit**.
+  - A sample edit is in `sample-project/edits/`.
+- **Cut overruns and source checks (v3.1):** when the cuts add up to more than the page, the card shows **✂ +0.208s over**, and the drawer offers **trim last cut to fit** or **stretch page**. Each cut is also checked against its clip's out point and generation length (a **gen** field per cut, or the Gen length of a page using the same clip).
+- **Bridged cut pages (v3.1):** for a page with status *cut*, tick **Bridged in the edit** when the real edit covers its song time. The gap goes away, and no screen time is added.
 - **Online-only media (v3):** a page that only has a Drive ID shows the Drive thumbnail with **☁ online** and the ↗ Drive button. That's fine, not an error.
 - **Revision safety (v2):** every save raises `revision` by 1. Before writing, the app re-reads the file; if someone else saved in between, you choose what happens.
 - **Comments and flags:** leave notes for Mirrage on a page; replies show threaded (↩ Reply). A flag (e.g. "drink – Lucas to OK") shows in red.

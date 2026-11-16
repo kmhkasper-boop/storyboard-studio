@@ -290,7 +290,9 @@
       p.effect ? el('span', { class: 'chip spd', title: 'Effect' }, '✦ ' + p.effect) : null,
       p.cuts.length ? el('span', { class: 'chip', title: 'Cut sequence' }, '✂ ' + p.cuts.length + ' cuts') : null,
       p.video && (p.video.in !== undefined || p.video.out !== undefined) ? el('span', { class: 'chip', title: 'Source in/out' }, '⇤⇥ ' + (p.video.in ?? 0) + '–' + (p.video.out ?? 'end') + 's') : null,
-      warn ? el('span', { class: 'chip warn', title: warn }, '⏱ gen ' + p.genSeconds + 's too short') : null,
+      warn ? el('span', { class: 'chip warn', title: warn }, p.cuts.length ? '⏱ cut source' : '⏱ gen ' + p.genSeconds + 's too short') : null,
+      (() => { const o = S.cutsOverrun(p, doc); return o ? el('span', { class: 'chip warn overrun', title: 'The cuts add up to ' + o.total + ' s on a ' + (Math.round(o.page * 1000) / 1000) + ' s page. Open the page to trim the last cut or stretch the page.' }, '✂ +' + o.over + 's over') : null; })(),
+      p.status === 'cut' && p.bridged ? el('span', { class: 'chip bridged', title: 'Cut, but the edit bridges its song time: no gap' }, '⇢ bridged') : null,
       gi.gap ? el('span', { class: 'gapchip', title: 'Song-time gap before this page' }, '⚠ gap ' + S.fmtTime(gi.gap.from, true) + '→' + S.fmtTime(gi.gap.to, true)) : null,
       gi.overlap ? el('span', { class: 'gapchip', title: 'Overlaps the previous linear page' }, '⚠ overlap ' + (Math.round(gi.overlap.seconds * 10) / 10) + 's') : null
     ].filter(Boolean);
@@ -470,6 +472,7 @@
       page: () => [
         editorWarnings(p), altStrip(p, scene),
         el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Status'), statusSel), el('div', { class: 'fld' }, el('label', null, 'Scene'), sceneSel)),
+        p.status === 'cut' ? el('label', { class: 'bridged-row', title: 'The real edit bridges this page\'s song time (e.g. the neighbours were extended), so the gap check treats it as covered.' }, (() => { const cb = el('input', { type: 'checkbox', class: 'f-bridged' }); cb.checked = !!p.bridged; cb.onchange = () => mutate(() => { findPage(p.id).page.bridged = cb.checked; }); return cb; })(), ' Bridged in the edit (no gap for its song time)') : null,
         el('div', { class: 'row' }, roleSel(p), speedField(p), retimeSel(p)),
         field('effect', 'Effect', { placeholder: 'e.g. flicker, strobe' }),
         mediaSlot(p, 'image'), mediaSlot(p, 'video'),
@@ -519,6 +522,10 @@
   }
   function editorWarnings(p) {
     const w = []; const dw = S.durationWarning(p, doc); if (dw) w.push('⏱ ' + dw);
+    const ov = S.cutsOverrun(p, doc);
+    if (ov) w.push(el('span', { class: 'overrun-msg' }, '✂ The cuts add up to ' + ov.total + ' s on a ' + (Math.round(ov.page * 1000) / 1000) + ' s page (+' + ov.over + ' s). ',
+      el('button', { class: 'copy-btn trim-fit', onclick: () => mutate(() => { S.trimCutsToFit(findPage(p.id).page, doc); }) }, 'trim last cut to fit'), ' ',
+      el('button', { class: 'copy-btn stretch-page', title: 'Sets the page duration to the cuts\' total (song start/end stay)', onclick: () => mutate(() => { S.stretchPageToCuts(findPage(p.id).page, doc); }) }, 'stretch page')));
     const gi = gapFor(p.id);
     if (gi.gap) w.push('⚠ Song-time gap: nothing covers ' + S.fmtTime(gi.gap.from, true) + ' → ' + S.fmtTime(gi.gap.to, true) + ' (' + (Math.round(gi.gap.seconds * 10) / 10) + ' s) before this page. Fill it, or set the role of an out-of-order page to Insert / Flash-forward / Flashback.');
     if (gi.overlap) w.push('⚠ Overlaps the previous linear page by ' + (Math.round(gi.overlap.seconds * 10) / 10) + ' s of song time.');
@@ -571,15 +578,16 @@
       videoEl ? el('button', { class: 'set-out', title: 'Set source out from the current frame of the video above', onclick: setFrom('out', iOut) }, 'out = frame ⇥') : null);
   }
   function cutsBox(p) {
-    const list = el('div', { class: 'cuts' });
+    const list = el('div', { class: 'cuts' }); const cutW = S.cutWarnings(p, doc);
     p.cuts.forEach((c, i) => {
       const num = (k, ph, title) => {
         const inp = el('input', { type: 'number', step: '0.01', placeholder: ph, title, class: 'cut-' + k });
-        const src = k === 'in' || k === 'out' ? c.media : c; inp.value = src[k] == null ? '' : src[k];
+        const src = k === 'in' || k === 'out' || k === 'genSeconds' ? c.media : c; inp.value = src[k] == null ? '' : src[k];
         inp.addEventListener('input', () => {
           mutate(() => {
             const x = findPage(p.id).page.cuts[i]; const v = parseFloat(inp.value);
             if (k === 'in' || k === 'out') { const n = numOrUndef(inp.value); if (n === undefined) delete x.media[k]; else x.media[k] = n; }
+            else if (k === 'genSeconds') { if (v > 0) x.media.genSeconds = v; else delete x.media.genSeconds; }
             else x[k] = isFinite(v) && v !== 0 && (k === 'speed' || v > 0) ? v : null;
           }, 'f:' + p.id + ':cut' + i + k, { render: false });
           updateCard(p.id); renderHeader();
@@ -587,9 +595,10 @@
         return inp;
       };
       const move = (d) => mutate(() => { const a = findPage(p.id).page.cuts; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; });
-      list.append(el('div', { class: 'cut', dataset: { i } },
+      const cw = cutW.find(x => x.i === i); const kg = S.clipGenSeconds(c.media, doc, p);
+      list.append(el('div', { class: 'cut' + (cw ? ' warn' : ''), dataset: { i }, title: cw ? cw.msg : '' },
         el('b', null, (i + 1) + '.'), el('span', { class: 'nm', title: mediaLabel(c.media) }, c.media.name || c.media.path || c.media.driveId || 'link'),
-        'in', num('in', '0', 'Source in (s)'), 'out', num('out', 'end', 'Source out (s)'), 'dur', num('duration', 'auto', 'On-screen duration (s); empty = share the page evenly'), '×', num('speed', '1', 'Speed (negative = reverse)'),
+        'in', num('in', '0', 'Source in (s)'), 'out', num('out', 'end', 'Source out (s)'), 'dur', num('duration', 'auto', 'On-screen duration (s); empty = share the page evenly'), '×', num('speed', '1', 'Speed (negative = reverse)'), 'gen', num('genSeconds', kg && !c.media.genSeconds ? String(kg) : '–', 'Generation length of this clip (s). Empty = taken from a page using the same clip' + (kg ? ' (' + kg + ' s)' : '')),
         el('button', { class: 'cut-up', title: 'Earlier', disabled: i === 0, onclick: () => move(-1) }, '↑'),
         el('button', { class: 'cut-down', title: 'Later', disabled: i === p.cuts.length - 1, onclick: () => move(1) }, '↓'),
         el('button', { class: 'danger cut-del', title: 'Remove cut', onclick: () => mutate(() => { findPage(p.id).page.cuts.splice(i, 1); }) }, '✕')));
@@ -890,6 +899,7 @@
       const loops = d / tot;
       box.append(el('div', { class: 'fld' }, el('label', null, 'Timeline · cuts ' + (Math.round(tot * 100) / 100) + ' s / page ' + (Math.round(d * 100) / 100) + ' s' + (Math.abs(loops - 1) > 0.02 ? (loops > 1 ? ' · loops ×' + (Math.round(loops * 10) / 10) : ' · last cuts are cut off') : '')), ctl));
     }
+    box.prepend(editorWarnings(p) || '');
     box.append(cutsBox(p), el('div', { class: 'btns' }, el('button', { class: 'cut-import', onclick: () => importEditDialog({ mode: 'cuts', pageId: p.id }) }, '⬇ Import cuts from CSV / EDL…')));
     return box;
   }
@@ -903,6 +913,8 @@
     const mode = el('select', { class: 'ie-mode' }, el('option', { value: 'pages' }, 'Map onto pages by song time'), el('option', { value: 'cuts' }, 'Into the selected page\u2019s cuts'));
     mode.value = opts.mode || 'pages';
     const off = el('input', { class: 'ie-offset', value: '0:00', style: { width: '80px' }, title: 'Song time at the start of the record timeline (01:00:00:00 or 00:00:00:00)' });
+    const snapF = el('input', { type: 'number', min: '0', step: '1', value: '4', class: 'ie-snap', style: { width: '60px' }, title: 'Event edges within this many frames of a page boundary snap to it' });
+    const onlyB = el('input', { type: 'checkbox', class: 'ie-only' }); const trimO = el('input', { type: 'checkbox', class: 'ie-trim' });
     const out = el('div', { class: 'ie-out' }); let plan = null;
     const preview = () => {
       out.innerHTML = '';
@@ -910,20 +922,27 @@
       if (!evs.length) { out.append(el('p', { class: 'muted' }, ta.value.trim() ? 'No events found. Expecting a CMX3600 EDL or a CSV with clip / source in / out / record in columns.' : '')); plan = null; return; }
       const pid = opts.pageId || selected;
       if (mode.value === 'cuts' && !pid) { out.append(el('p', { class: 'ed-warn' }, 'Select a page first.')); plan = null; return; }
-      plan = S.planEditImport(doc, evs, { mode: mode.value, pageId: pid, offset: S.parseTime(off.value) || 0, files: folderFiles() });
+      plan = S.planEditImport(doc, evs, { mode: mode.value, pageId: pid, offset: S.parseTime(off.value) || 0, files: folderFiles(), fps: parseFloat(fps.value) || 24, snapFrames: parseFloat(snapF.value) >= 0 ? parseFloat(snapF.value) : 4, onlyBoard: onlyB.checked });
       const labels = S.pageLabels(doc); const assigned = plan.rows.filter(r => r.pageId).length;
-      out.append(el('p', null, plan.rows.length + ' events · ' + assigned + ' assigned · ' + plan.rows.filter(r => r.found).length + ' matched to files in the folder' + (local.kind ? '' : ' (no folder open: clip names are kept as paths)')),
+      const spd = (r) => { const i = r.speedInfo; const t = (r.speed < 0 ? '◀ ' : '') + Math.round(Math.abs(r.speed) * 1000) / 10 + '%';
+        const tip = i ? 'from ' + ({ comment: '* SPEED comment', ratio: 'source ÷ record duration', m2: 'M2 (' + i.m2Kind + ')', default: 'default' })[i.from] + ' · comment ' + (i.values.comment ?? '–') + ' · src/rec ' + (i.values.ratio ?? '–') + ' · M2 ' + (i.m2Raw ?? '–') + (i.m2Kind ? ' read as ' + i.m2Kind + ' = ' + i.values.m2 : '') + (i.conflict ? ' · DISAGREE: ' + i.conflicts.join(', ') : '') : '';
+        return el('td', { class: 'ie-speed' + (i && i.conflict ? ' disagree' : ''), title: tip }, t + (i && i.conflict ? ' ⚠' : '')); };
+      const ex = plan.excluded; const grp = {}; for (const r of ex) { const k = (r.ev.clip.split(/[\\/]/).pop().match(/^[A-Za-z]+_/) || ['other'])[0]; grp[k] = (grp[k] || 0) + 1; }
+      out.append(el('p', null, plan.rows.length + ' events · ' + assigned + ' assigned · ' + plan.rows.filter(r => r.found).length + ' matched to files in the folder · ' + plan.rows.filter(r => r.onBoard).length + ' on the board' + (local.kind ? '' : ' (no folder open: clip names are kept as paths)')),
+        ex.length ? el('details', { class: 'ie-excluded' }, el('summary', null, ex.length + ' excluded (not on the board): ' + Object.entries(grp).map(([k, n]) => k + ' ×' + n).join(', ')), el('div', { class: 'muted' }, ex.map(r => '#' + r.ev.n + ' ' + r.ev.clip).join(' · '))) : null,
+        Object.keys(plan.overruns).length ? el('p', { class: 'ed-warn ie-overruns' }, '✂ Overrun: ' + Object.entries(plan.overruns).map(([id, o]) => 'page ' + labels.get(id) + ' cuts ' + o.total + ' s on ' + (Math.round(o.page * 1000) / 1000) + ' s (+' + o.over + ' s)').join(' · ') + '. Tick "trim last cut to fit", or fix it later in the drawer.') : null,
         el('table', { class: 'ie-table' }, el('tr', null, ['#', 'clip', 'file', 'src in–out', 'speed', 'song', '→ page'].map(h => el('th', null, h))),
-          plan.rows.map(r => el('tr', { class: r.pageId ? '' : 'unassigned' }, el('td', null, String(r.ev.n)), el('td', null, r.ev.clip), el('td', null, r.found ? '✓ ' + r.media.path : '✗ not found'),
-            el('td', null, (r.media.in ?? '') + '–' + (r.media.out ?? '')), el('td', null, r.speed !== 1 ? r.speed + '×' : ''), el('td', null, r.songIn !== null ? S.fmtTime(r.songIn, true) : ''),
+          plan.rows.filter(r => !r.excluded).map(r => el('tr', { class: (r.pageId ? '' : 'unassigned') + (plan.overruns[r.pageId] ? ' over' : ''), dataset: { n: r.ev.n } }, el('td', null, String(r.ev.n)), el('td', null, r.ev.clip), el('td', null, r.found ? '✓ ' + r.media.path : r.onBoard ? '☁ on board: ' + (r.media.path || r.media.driveId) : '✗ not found'),
+            el('td', null, (r.media.in ?? '') + '–' + (r.media.out ?? '')), spd(r), el('td', { title: r.snapped ? 'snapped ' + Math.round(r.snapped * plan.fps) + ' frame(s) to the page boundary' : '' }, (r.songIn !== null ? S.fmtTime(r.songIn, true) : '') + (r.snapped ? ' ⇥' + (r.snapped > 0 ? '+' : '') + Math.round(r.snapped * plan.fps) + 'f' : '')),
             el('td', null, r.pageId ? labels.get(r.pageId) + (plan.pages[r.pageId].length > 1 ? ' (cut ' + (plan.pages[r.pageId].indexOf(r) + 1) + ')' : '') : '—')))),
         el('p', { class: 'muted' }, mode.value === 'cuts' ? 'Apply replaces the page\u2019s cuts with these events.' : 'A page that gets one event: its video and source in/out are set. A page that gets several: they become its cuts.'));
     };
-    [ta, fps, mode, off].forEach(x => x.addEventListener(x === ta ? 'input' : 'change', preview));
+    [ta, fps, mode, off, snapF, onlyB].forEach(x => x.addEventListener(x === ta ? 'input' : 'change', preview));
     const box = el('div', { class: 'import-edit' }, el('h2', null, '⬇ Import cut list (CSV / EDL)'), ta, el('div', { class: 'row' }, file),
-      el('div', { class: 'row' }, el('label', null, 'Mode ', mode), el('label', null, 'fps ', fps), el('label', null, 'record start = song ', off)), out,
+      el('div', { class: 'row' }, el('label', null, 'Mode ', mode), el('label', null, 'fps ', fps), el('label', null, 'record start = song ', off), el('label', null, 'snap ', snapF, ' frames')),
+      el('div', { class: 'row' }, el('label', { title: 'Match by file name or Drive ID against media already on the board; skip the rest (e.g. CO_, BP_, STILL_ clips)' }, onlyB, ' only clips that match existing board media'), el('label', null, trimO, ' trim last cut to fit on overrun')), out,
       el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), el('button', { class: 'ie-preview', onclick: preview }, 'Preview'),
-        el('button', { class: 'primary ie-apply', onclick: () => { if (!plan || !Object.keys(plan.pages).length) return toast('Nothing to apply'); const m = mode.value; mutate(d => { S.applyEditPlan(d, plan, m); }); closeModal(); toast('Applied ' + plan.rows.filter(r => r.pageId).length + ' events to ' + Object.keys(plan.pages).length + ' page(s). Undo with Ctrl/Cmd+Z.', 4000); } }, 'Apply')));
+        el('button', { class: 'primary ie-apply', onclick: () => { if (!plan || !Object.keys(plan.pages).length) return toast('Nothing to apply'); const m = mode.value; const tr = trimO.checked; mutate(d => { S.applyEditPlan(d, plan, m, { trimOverruns: tr }); }); closeModal(); toast('Applied ' + plan.rows.filter(r => r.pageId).length + ' events to ' + Object.keys(plan.pages).length + ' page(s). Undo with Ctrl/Cmd+Z.', 4000); } }, 'Apply')));
     modal(box, { wide: true });
   }
   function renderVariantBar() {

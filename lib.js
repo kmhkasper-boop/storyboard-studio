@@ -99,7 +99,8 @@
    *  source needed = page length × |speed| starting at video.in, and video.out must lie inside the generation.
    *  No genSeconds -> no warning (the prompt text is not guessed any more). A longer generation trimmed down is normal. */
   function durationWarning(p, doc) {
-    const g = num(p.genSeconds); if (!(g > 0) || (p.cuts && p.cuts.length)) return '';
+    if (p.cuts && p.cuts.length) { const w = cutWarnings(p, doc); return w.length ? w.map(x => x.msg).join(' ') : ''; } // v3.1: each cut is checked against its own clip
+    const g = num(p.genSeconds); if (!(g > 0)) return '';
     const r2 = (x) => Math.round(x * 100) / 100; const tol = 0.04;
     const d = pageDuration(p, doc); const sp = Math.abs(speedOf(p)); const v = p.video || {};
     const a = v.in !== undefined ? v.in : 0;
@@ -109,13 +110,62 @@
     return '';
   }
 
+  /** v3.1: cut durations that add up to more than the page. Returns {total, page, over} or null. Cuts without a duration share the page, so they never overrun. */
+  function cutsOverrun(p, doc, tol) {
+    if (!p.cuts || !p.cuts.length || p.cuts.some(c => !(c.duration > 0))) return null;
+    const total = p.cuts.reduce((a, c) => a + c.duration, 0);
+    const hasLen = num(p.duration) > 0 || (parseTime(p.start) !== null && parseTime(p.end) !== null && parseTime(p.end) > parseTime(p.start));
+    if (!hasLen) return null; // page length comes from the cuts themselves
+    const page = pageDuration(p, doc); const over = Math.round((total - page) * 1000) / 1000;
+    return over > (tol === undefined ? 0.02 : tol) ? { total: Math.round(total * 1000) / 1000, page, over } : null;
+  }
+  /** Trim the last cut(s) so the cuts fit the page exactly (cuts shorter than 0.04 s are removed). */
+  function trimCutsToFit(p, doc) {
+    const o = cutsOverrun(p, doc, 0.0005); if (!o) return p; let over = o.over;
+    while (over > 0.0005 && p.cuts.length) { const c = p.cuts[p.cuts.length - 1]; if (c.duration - over >= 0.04) { c.duration = Math.round((c.duration - over) * 1000) / 1000; over = 0; } else { over = Math.round((over - c.duration) * 1000) / 1000; p.cuts.pop(); } }
+    return p;
+  }
+  /** Stretch the page to the cuts' total (sets an explicit duration; song start/end stay). */
+  function stretchPageToCuts(p, doc) { const o = cutsOverrun(p, doc, 0.0005); if (o) p.duration = o.total; return p; }
+  const sameClip = (a, b) => !!(a && b && ((a.driveId && a.driveId === b.driveId) || (a.path && b.path && a.path.split('/').pop().toLowerCase() === b.path.split('/').pop().toLowerCase())));
+  /** Known generation length of a clip: media.genSeconds, else genSeconds of a page whose video is the same clip (by driveId or file name). */
+  function clipGenSeconds(m, doc, page) {
+    if (!m) return null; if (m.genSeconds > 0) return m.genSeconds;
+    if (page && page.genSeconds > 0 && sameClip(page.video, m)) return page.genSeconds;
+    for (const s of (doc && doc.scenes) || []) for (const q of s.pages) { if (q.genSeconds > 0 && sameClip(q.video, m)) return q.genSeconds; for (const c of q.cuts || []) if (c.media && c.media.genSeconds > 0 && sameClip(c.media, m)) return c.media.genSeconds; }
+    return null;
+  }
+  const STILL_RE = /\.(jpe?g|png|webp|gif|avif|bmp|tiff?|heic)$/i;
+  /** v3.1: per-cut source check: in + duration × |speed| must fit before the clip's out point / generation end. Returns [{i, msg}]. */
+  function cutWarnings(p, doc) {
+    const out = []; if (!p.cuts || !p.cuts.length) return out;
+    const d = pageDuration(p, doc); const r2 = (x) => Math.round(x * 100) / 100; const tol = 0.04;
+    p.cuts.forEach((c, i) => {
+      const m = c.media || {}; if (STILL_RE.test(m.path || m.name || '')) return;
+      const g = clipGenSeconds(m, doc, p); const a = m.in !== undefined ? m.in : 0;
+      const dur = c.duration > 0 ? c.duration : d / p.cuts.length; const sp = Math.abs(c.speed || speedOf(p)); const end = a + dur * sp;
+      if (g && m.out !== undefined && m.out > g + tol) out.push({ i, msg: 'Cut ' + (i + 1) + ': source out ' + r2(m.out) + ' s is past the end of the ' + r2(g) + ' s generation.' });
+      else if (m.out !== undefined && end > m.out + tol) out.push({ i, msg: 'Cut ' + (i + 1) + ': needs source ' + r2(a) + '–' + r2(end) + ' s (' + r2(dur) + ' s' + (sp !== 1 ? ' × ' + r2(sp) : '') + ') but its out point is ' + r2(m.out) + ' s.' });
+      else if (g && end > g + tol) out.push({ i, msg: 'Cut ' + (i + 1) + ': needs source ' + r2(a) + '–' + r2(end) + ' s but the clip is a ' + r2(g) + ' s generation.' });
+    });
+    return out;
+  }
+
   /** Song-time analysis: total screen time, song span and gaps/overlaps between consecutive linear pages. */
   function timeline(doc) {
     doc = activeDoc(doc);
     let screen = 0, songStart = null, songEnd = null; const gaps = [], overlaps = [];
     let prev = null, between = 0;
     for (const s of doc.scenes) for (const p of s.pages) {
-      if (p.status === 'cut') continue;
+      if (p.status === 'cut' && !p.bridged) continue;
+      if (p.status === 'cut') { // v3.1 bridged: no screen time, but its song time counts as covered in the gap check
+        const a = parseTime(p.start), b = parseTime(p.end);
+        if ((p.role || 'linear') === 'linear' && a !== null && b !== null) {
+          if (prev) { const pe = parseTime(prev.end); if (pe !== null && a - pe - between > 0.05) gaps.push({ pageId: p.id, prevId: prev.id, from: pe, to: a, seconds: a - pe - between, filled: between }); }
+          prev = p; between = 0;
+        }
+        continue;
+      }
       screen += pageDuration(p, doc);
       const a = parseTime(p.start), b = parseTime(p.end);
       if (a !== null) songStart = songStart === null ? a : Math.min(songStart, a);
@@ -184,6 +234,7 @@
     if (m.md5) out.md5 = String(m.md5);
     if (m.modifiedTime) out.modifiedTime = String(m.modifiedTime);
     if (m.version) out.version = String(m.version);
+    const gs = num(m.genSeconds); if (gs > 0) out.genSeconds = gs; // v3.1: length of this generated clip (optional, mostly on cut media)
     return out;
   }
 
@@ -266,6 +317,7 @@
     out.role = ROLE_IDS.includes(p.role) ? p.role : '';
     out.cuts = Array.isArray(p.cuts) ? p.cuts.map(normCut).filter(Boolean) : [];
     const gs = num(p.genSeconds); out.genSeconds = gs > 0 ? gs : null;
+    out.bridged = p.bridged === true; // v3.1: a status-cut page whose song time the real edit bridged (gap check treats it as covered)
     out.altOf = p.altOf ? String(p.altOf) : ''; out.altLabel = p.altLabel ? String(p.altLabel) : ''; out.active = p.active !== false;
     out.characters = normCastRefs(p.characters);
     out.takes = Array.isArray(p.takes) ? p.takes.map(normTake).filter(Boolean) : [];
@@ -706,6 +758,7 @@
       out.push(ev + '  ' + reel.padEnd(8) + ' V     C        ' + tc(src[0], fps) + ' ' + tc(r.clip ? src[0] + r.duration * Math.abs(r.speed) : r.duration, fps) + ' ' + tc(3600 + r.recIn, fps) + ' ' + tc(3600 + r.recOut, fps));
       if (r.speed !== 1 && r.clip) out.push('M2   ' + reel.padEnd(8) + ' ' + (r.speed < 0 ? '-' : '') + String((Math.abs(r.speed) * fps).toFixed(1)).padStart(5, '0') + '             ' + tc(src[0], fps));
       if (r.clip) out.push('* FROM CLIP NAME: ' + r.clip.split('/').pop());
+      if (r.speed !== 1 && r.clip) out.push('* SPEED: ' + Math.round(r.speed * 1000) / 10 + '%');
       out.push('* COMMENT: PAGE ' + r.page + (r.code ? ' CODE ' + r.code : '') + ' ' + r.role.toUpperCase() + (r.songIn ? ' SONG ' + r.songIn + '-' + (r.songOut || '') : '') + (r.effect ? ' FX ' + r.effect : '') + (r.retime ? ' RETIME ' + r.retime : ''));
       out.push('');
     });
@@ -869,6 +922,32 @@
     return parseTime(s);
   }
   /** CMX3600 -> [{n, clip, reel, srcIn, srcOut, recIn, recOut, speed}] (video events; M2 lines set speed; "* FROM CLIP NAME" sets clip) */
+  /** v3.1 speed resolution for one edit event. Priority: "* SPEED: xx%" comment, else source/record duration ratio, with M2 as a hint.
+   *  M2 is ambiguous: CMX writes a frame rate (012.0 at 24 fps = 50 %), Resolve writes a percentage (050.0 = 50 %). The ratio decides which. */
+  function resolveSpeed(e, fps) {
+    const src = e.srcOut - e.srcIn, rec = e.recOut - e.recIn; const near = (a, b) => Math.abs(a - b) <= Math.max(0.03, Math.abs(b) * 0.05);
+    const ratio = rec > 0.001 && Math.abs(src) > 0.001 ? Math.abs(src) / rec : null;
+    const m2 = e.m2 !== undefined ? e.m2 : null; const neg = (m2 !== null && m2 < 0) || (e.comment !== null && e.comment !== undefined && e.comment < 0) || e.revSrc;
+    const asPct = m2 !== null ? Math.abs(m2) / 100 : null, asFps = m2 !== null ? Math.abs(m2) / fps : null;
+    let m2Kind = '', m2Speed = null;
+    if (m2 !== null) {
+      const ref = e.comment !== null && e.comment !== undefined ? Math.abs(e.comment) : ratio !== null && !near(ratio, 1) ? ratio : null;
+      if (ref !== null) { m2Kind = Math.abs(asPct - ref) <= Math.abs(asFps - ref) ? 'percent' : 'fps'; }
+      else m2Kind = near(asFps, 1) && !near(asPct, 1) ? 'fps' : 'percent'; // no cross-check: Resolve style unless M2 equals the timeline fps
+      m2Speed = m2Kind === 'percent' ? asPct : asFps;
+    }
+    let mag, from;
+    if (e.comment !== null && e.comment !== undefined) { mag = Math.abs(e.comment); from = 'comment'; }
+    else if (ratio !== null && !(near(ratio, 1) && m2Speed !== null && !near(m2Speed, 1))) { mag = ratio; from = 'ratio'; }
+    else if (m2Speed !== null) { mag = m2Speed; from = 'm2'; } // ratio 1 with an M2: the source out was not speed-adjusted
+    else { mag = ratio !== null ? ratio : 1; from = ratio !== null ? 'ratio' : 'default'; }
+    // snap tiny rounding (frame-quantised ratios) to the M2/comment value when they agree
+    if (from === 'ratio' && m2Speed !== null && near(mag, m2Speed)) mag = m2Speed;
+    mag = Math.round(mag * 1000) / 1000 || 1;
+    const vals = { comment: e.comment !== undefined ? e.comment : null, ratio: ratio !== null ? Math.round(ratio * 1000) / 1000 : null, m2: m2Speed !== null ? Math.round(m2Speed * 1000) / 1000 : null };
+    const conflicts = Object.entries(vals).filter(([k, v]) => v !== null && !near(Math.abs(v), mag)).map(([k]) => k);
+    return { speed: neg ? -mag : mag, from, m2Kind, m2Raw: m2, values: vals, conflict: conflicts.length > 0, conflicts };
+  }
   function parseCMX3600(text, fps) {
     fps = fps || 24; const ev = []; let cur = null;
     for (const raw of String(text).split(/\r?\n/)) {
@@ -880,10 +959,18 @@
         ev.push(cur); continue;
       }
       if (!cur) continue;
-      if ((m = line.match(/^M2\s+\S+\s+(-?\d+(?:\.\d+)?)/))) { const f = parseFloat(m[1]); cur.speed = Math.round(f / fps * 1000) / 1000 || 1; continue; }
+      if ((m = line.match(/^M2\s+\S+\s+(-?\d+(?:\.\d+)?)/))) { cur.m2 = parseFloat(m[1]); continue; }
+      if ((m = line.match(/^\*\s*SPEED\s*:?\s*(-?\d+(?:\.\d+)?)\s*%/i))) { cur.comment = parseFloat(m[1]) / 100; continue; }
       if ((m = line.match(/^\*\s*(?:FROM|SOURCE) (?:CLIP NAME|FILE):\s*(.+)$/i))) { if (!cur.clip || /CLIP NAME/i.test(line)) cur.clip = m[1].trim(); continue; }
     }
-    return ev.filter(e => !e.black).map(e => { if (!e.clip) e.clip = e.reel; const lo = Math.min(e.srcIn, e.srcOut), hi = Math.max(e.srcIn, e.srcOut); e.srcIn = lo; e.srcOut = hi; return e; });
+    return ev.filter(e => !e.black).map(e => {
+      if (!e.clip) e.clip = e.reel; e.revSrc = e.srcIn > e.srcOut;
+      const lo = Math.min(e.srcIn, e.srcOut), hi = Math.max(e.srcIn, e.srcOut); e.srcIn = lo; e.srcOut = hi;
+      const r = resolveSpeed(e, fps); e.speed = r.speed; e.speedInfo = r;
+      // source range actually used = in + record duration × |speed| (fixes EDLs whose source out was not speed-adjusted)
+      if ((r.from === 'm2' || (r.from === 'comment' && r.conflicts.includes('ratio'))) && e.recOut > e.recIn) e.srcOut = Math.round((e.srcIn + (e.recOut - e.recIn) * Math.abs(r.speed)) * 1000) / 1000;
+      return e;
+    });
   }
   function parseCSVRows(text) {
     const rows = []; let row = [], cell = '', q = false; const t = String(text).replace(/^\uFEFF/, '');
@@ -901,12 +988,12 @@
     const h = rows[0].map(x => x.trim().toLowerCase().replace(/[^a-z]/g, ''));
     const col = (...names) => h.findIndex(x => names.includes(x));
     const ci = { clip: col('clip', 'clipname', 'name', 'filename', 'file', 'sourcefile', 'reelname', 'reel'), si: col('srcin', 'sourcein', 'sourcestart'), so: col('srcout', 'sourceout', 'sourceend'),
-      ri: col('recin', 'recordin', 'recordstart', 'timelinein'), ro: col('recout', 'recordout', 'recordend', 'timelineout'), sp: col('speed', 'speedpercent', 'speedchange'), du: col('duration'), song: col('songin'), songOut: col('songout'), page: col('page') };
+      ri: col('recin', 'recordin', 'recordstart', 'timelinein'), ro: col('recout', 'recordout', 'recordend', 'timelineout'), sp: col('speed', 'speedpercent', 'speedchange'), du: col('duration'), song: col('songin'), songOut: col('songout'), page: col('page'), drive: col('driveid') };
     const spPct = ci.sp >= 0 && /%|percent/i.test(rows[0][ci.sp]); // "Speed %" / "Speed Percent" columns hold 100 = normal
     return rows.slice(1).map((r, k) => {
       const g = (i) => (i >= 0 ? r[i] : undefined);
       let sp = g(ci.sp); let speed = 1; if (sp !== undefined && String(sp).trim()) { const pct = String(sp).match(/(-?\d+(?:\.\d+)?)\s*%/); speed = pct || spPct ? parseFloat(pct ? pct[1] : sp) / 100 || 1 : parseFloat(sp) || 1; }
-      const e = { n: k + 1, clip: String(g(ci.clip) || '').trim(), srcIn: parseTimeAny(g(ci.si), fps), srcOut: parseTimeAny(g(ci.so), fps), recIn: parseTimeAny(g(ci.ri), fps), recOut: parseTimeAny(g(ci.ro), fps), speed, duration: parseTimeAny(g(ci.du), fps) };
+      const e = { n: k + 1, driveId: ci.drive >= 0 ? String(g(ci.drive) || '').trim() : '', clip: String(g(ci.clip) || '').trim(), srcIn: parseTimeAny(g(ci.si), fps), srcOut: parseTimeAny(g(ci.so), fps), recIn: parseTimeAny(g(ci.ri), fps), recOut: parseTimeAny(g(ci.ro), fps), speed, duration: parseTimeAny(g(ci.du), fps) };
       if (ci.song >= 0 && String(g(ci.song) || '').trim()) e.songIn = parseTimeAny(g(ci.song), fps);
       if (e.recOut === null && e.recIn !== null && e.duration) e.recOut = e.recIn + e.duration;
       if (e.srcIn !== null && e.srcOut !== null && e.srcOut < e.srcIn) [e.srcIn, e.srcOut] = [e.srcOut, e.srcIn];
@@ -923,40 +1010,78 @@
   }
   /** Plan where each event goes. mode 'pages': by song time (record time − recordStart + offset, or the CSV's songIn) onto active linear pages;
    *  mode 'cuts': all events become the cuts of opts.pageId. Returns {rows:[{ev, media, found, songIn, pageId}], pages:{id:[row…]}} */
+  /** All media referenced on the board (pages, cuts, takes; active and inactive). */
+  function boardMedia(doc) {
+    const out = []; const add = (m) => { if (m && (m.path || m.driveId)) out.push(m); };
+    for (const s of doc.scenes) for (const p of s.pages) { add(p.image); add(p.video); for (const c of p.cuts || []) add(c.media); for (const t of p.takes || []) add(t); }
+    return out;
+  }
+  function matchBoard(ev, media) {
+    if (ev.driveId) { const m = media.find(x => x.driveId === ev.driveId); if (m) return m; }
+    const f = matchClip(ev.clip, media.filter(x => x.path).map(x => ({ path: x.path, name: x.path.split('/').pop(), m: x })));
+    return f ? f.m : null;
+  }
+  /** Plan where each event goes.
+   *  mode 'pages': song time = record time − recordStart + offset (or the CSV's songIn). Each event goes to the active, non-cut page that holds most of its
+   *  duration; event edges within opts.snapFrames (default 4) frames of a page boundary snap to it first.
+   *  mode 'cuts': all events become the cuts of opts.pageId.  opts.onlyBoard: keep only clips that match existing board media (file name or driveId).
+   *  Returns {rows, pages:{id:[row…]}, excluded:[row…], overruns:{id:{total,page,over}}, recordStart, offset, fps, snap} */
   function planEditImport(doc, events, opts) {
-    opts = opts || {}; const files = opts.files || []; const ad = activeDoc(doc);
+    opts = opts || {}; const files = opts.files || []; const ad = activeDoc(doc); const fps = opts.fps || doc.fps || 24;
+    const snap = (opts.snapFrames === undefined || opts.snapFrames === null ? 4 : opts.snapFrames) / fps;
     const firstRec = events.reduce((a, e) => (e.recIn !== null && e.recIn !== undefined ? Math.min(a, e.recIn) : a), Infinity);
     const recordStart = opts.recordStart !== undefined && opts.recordStart !== null ? opts.recordStart : (firstRec >= 3600 ? 3600 : 0);
-    const offset = opts.offset || 0;
+    const offset = opts.offset || 0; const bm = boardMedia(doc);
     const targets = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status === 'cut') continue; const a = parseTime(p.start); if (a === null) continue; let b = parseTime(p.end); if (b === null || b <= a) b = a + pageDuration(p, doc); targets.push({ p, a, b }); }
-    const rows = []; const pages = {};
+    const edges = [...new Set(targets.flatMap(t => [t.a, t.b]))];
+    const snapTo = (x) => { let best = x, bd = snap + 1e-6; for (const e of edges) { const d = Math.abs(e - x); if (d <= bd) { bd = d; best = e; } } return best; };
+    const rows = []; const pages = {}; const excluded = [];
     for (const ev of events) {
-      const f = matchClip(ev.clip, files);
-      const media = normMedia(f ? { path: f.path, name: f.name } : { path: ev.clip, name: ev.clip.split(/[\\/]/).pop() });
+      const f = matchClip(ev.clip, files); const onBoard = matchBoard(ev, bm);
+      const base = f ? { path: f.path, name: f.name } : onBoard ? { path: onBoard.path, driveId: onBoard.driveId, name: onBoard.name } : { path: ev.clip, driveId: ev.driveId || '', name: ev.clip.split(/[\\/]/).pop() };
+      if (f && onBoard && onBoard.driveId && sameClip(onBoard, { path: f.path })) base.driveId = onBoard.driveId;
+      const media = normMedia(base) || normMedia({ path: ev.clip || 'clip' });
       if (ev.srcIn !== null && ev.srcIn !== undefined) media.in = Math.round(ev.srcIn * 1000) / 1000;
       if (ev.srcOut !== null && ev.srcOut !== undefined && ev.srcOut > (media.in || 0)) media.out = Math.round(ev.srcOut * 1000) / 1000;
+      if (onBoard && onBoard.genSeconds) media.genSeconds = onBoard.genSeconds;
       const v = versionLabel(media.name); if (v) media.version = v;
-      const songIn = ev.songIn !== undefined ? ev.songIn : ev.recIn !== null && ev.recIn !== undefined ? ev.recIn - recordStart + offset : null;
-      let pageId = null;
-      if (opts.mode === 'cuts') pageId = opts.pageId || null;
-      else if (songIn !== null) { const hit = targets.find(t => songIn + 0.01 >= t.a && songIn + 0.01 < t.b); pageId = hit ? hit.p.id : null; }
-      const row = { ev, media, found: !!f, songIn, pageId, duration: ev.recOut !== null && ev.recOut !== undefined && ev.recIn !== null && ev.recIn !== undefined ? Math.round((ev.recOut - ev.recIn) * 1000) / 1000 : (ev.duration || null), speed: ev.speed || 1 };
-      rows.push(row); if (pageId) (pages[pageId] = pages[pageId] || []).push(row);
+      const hasRec = ev.recIn !== null && ev.recIn !== undefined;
+      const songIn = ev.songIn !== undefined && ev.songIn !== null ? ev.songIn : hasRec ? ev.recIn - recordStart + offset : null;
+      const duration = hasRec && ev.recOut !== null && ev.recOut !== undefined ? Math.round((ev.recOut - ev.recIn) * 1000) / 1000 : (ev.duration || null);
+      const songOut = songIn !== null && duration ? songIn + duration : null;
+      const row = { ev, media, found: !!f, onBoard: !!onBoard, songIn, songOut, pageId: null, duration, speed: ev.speed || 1, speedInfo: ev.speedInfo || null, snapped: 0 };
+      if (opts.onlyBoard && !onBoard) { excluded.push(row); rows.push(Object.assign(row, { excluded: true })); continue; }
+      if (opts.mode === 'cuts') row.pageId = opts.pageId || null;
+      else if (songIn !== null) {
+        const a0 = snapTo(songIn), b0 = songOut !== null ? snapTo(songOut) : null; row.snapped = Math.round((a0 - songIn) * 1000) / 1000;
+        let best = null, bo = 0;
+        if (b0 !== null && b0 > a0) for (const t of targets) { const o = Math.min(b0, t.b) - Math.max(a0, t.a); if (o > bo + 1e-6) { bo = o; best = t; } }
+        if (!best) best = targets.find(t => a0 + 0.001 >= t.a && a0 + 0.001 < t.b) || null;
+        row.pageId = best ? best.p.id : null;
+      }
+      rows.push(row); if (row.pageId) (pages[row.pageId] = pages[row.pageId] || []).push(row);
     }
-    return { rows, pages, recordStart, offset };
+    const overruns = {};
+    for (const [pid, rs] of Object.entries(pages)) {
+      if (opts.mode !== 'cuts' && rs.length < 2) continue;
+      const p = allPages(doc).find(q => q.id === pid); const o = p && cutsOverrun(Object.assign({}, p, { cuts: rs.map(r => ({ duration: r.duration })) }), doc);
+      if (o) overruns[pid] = o;
+    }
+    return { rows, pages, excluded, overruns, recordStart, offset, fps, snap };
   }
   /** Apply a plan. 'pages' mode: one event -> page video with source in/out (+speed); several -> page cuts. 'cuts' mode: events replace the page's cuts. */
-  function applyEditPlan(doc, plan, mode) {
+  function applyEditPlan(doc, plan, mode, opts) {
+    opts = opts || {};
     for (const [pid, rows] of Object.entries(plan.pages)) {
       let p = null; for (const s of doc.scenes) for (const q of s.pages) if (q.id === pid) p = q; if (!p) continue;
       if (mode !== 'cuts' && rows.length === 1) { const r = rows[0]; p.video = Object.assign({}, p.video && p.video.path === r.media.path ? p.video : {}, r.media); p.cuts = []; p.speed = r.speed !== 1 ? r.speed : (p.speed && p.speed !== 1 ? null : p.speed); }
-      else p.cuts = rows.map(r => ({ media: r.media, duration: r.duration && r.duration > 0 ? r.duration : null, speed: r.speed !== 1 ? r.speed : null }));
+      else { p.cuts = rows.map(r => ({ media: r.media, duration: r.duration && r.duration > 0 ? r.duration : null, speed: r.speed !== 1 ? r.speed : null })); if (opts.trimOverruns) trimCutsToFit(p, doc); }
     }
     return doc;
   }
 
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
 
-  const api = { regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);

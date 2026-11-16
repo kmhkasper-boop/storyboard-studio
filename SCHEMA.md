@@ -1,4 +1,4 @@
-# Storyboard file format v3 (for Mirrage)
+# Storyboard file format v3.1 (for Mirrage)
 
 Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive project folder of a video. Lucas edits it in the app; you (Mirrage) read and edit the same file with the Drive connector. There is no database and no hidden state: **the file is the storyboard.**
 
@@ -6,6 +6,13 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **What's new in v3.1** (still `"version": 3`; both new fields are optional):
+> - page `bridged: true`: a page with status `cut` whose song time the real edit bridged. The gap check treats its time as covered.
+> - media `genSeconds` (mostly on cut media): the generation length of that clip, used by the per-cut source check.
+> - **Cut overruns:** flagged when the cuts add up to more than the page, with *trim last cut to fit* and *stretch page*.
+> - **Per-cut source checks:** each cut's in + duration × |speed| is checked against its out point and the clip's generation length.
+> - **Import fixes:** Resolve's percent `M2` and `* SPEED:` comments are read correctly, events are assigned to the page with the most overlap and snapped to page edges, and there is an "only clips on the board" filter.
+>
 > **What's new in v3.** Every v3 field is optional. v1 and v2 files stay valid and load unchanged, and nothing was renamed in v3.
 >
 > - page `genSeconds`: the real length of the generated clip. The ⏱ check now uses it and no longer guesses from the prompt text.
@@ -103,6 +110,7 @@ Page numbers are **not stored**. "Page 7" means the 7th **active** page counting
 | `imagePrompt` + `imageTool` | string | still-image prompt and the tool it is for |
 | `videoPrompt` + `videoTool` | string | **v2** image-to-video prompt (v1: `clipPrompt`). **v3:** the text is no longer parsed for a length; use `genSeconds`. |
 | `genSeconds` | number (s) | **v3** the length of the generated clip (e.g. `6`). ⏱ warns only when it is too short for the page (see *Song time checks*). |
+| `bridged` | boolean | **v3.1** only for `status: "cut"`: the real edit bridged this page's song time (e.g. the neighbours were extended), so the gap check treats `start`–`end` as covered. It still adds no screen time. Written only when `true`. |
 | `altOf` | string | **v3** id of the page this one is an **alternative shot** of (always the root page, in the same scene). |
 | `altLabel` | string | **v3** tab label, e.g. `"A"`, `"B close-up"` |
 | `active` | boolean | **v3** exactly one page of a root + its alternatives is active. Missing = `true`; written only when `false`. |
@@ -142,6 +150,7 @@ The app also accepts `in-edit`/`inedit` → `inEdit` and `done` → `final`. Unk
 | `driveId` | Drive file ID (online thumbnails and the ↗ Drive link) |
 | `name`, `url` | display name; optional web URL (or a `data:` URL for a small dropped image) |
 | `in`, `out` | **v2** seconds **inside the clip** (the source range). They are separate from the page's song `start`/`end`. Play mode plays only this range. `out` must be greater than `in`. |
+| `genSeconds` | **v3.1** generation length of this clip in seconds (optional). Mainly for cut media; for the page's own clip use the page's `genSeconds`. |
 | `version` | **v2** label like `"v2"`. Auto-link and the pickers fill it from a `_v2` suffix. |
 | `md5`, `modifiedTime` | **v2** drift check: copy them from the Drive file metadata. The editor shows them, so you can both see whether the linked file changed. |
 
@@ -161,6 +170,8 @@ Always fill in both `path` and `driveId` when you know them.
 
 - **Play order.** Play mode plays the cuts in order within the page length and loops them if they are shorter than the page.
 - **Missing values.** A cut without `duration` gets an equal share of the page. A cut without `speed` uses the page `speed`.
+- **Overrun (v3.1).** When every cut has a `duration`, the page has its own length (`duration` or `start`/`end`) and the durations add up to more than that page (e.g. 4.208 s of cuts on a 4 s page), the card shows `✂ +0.208s over`. The drawer offers **trim last cut to fit** (shortens the last cut, removing cuts that would drop under 0.04 s) and **stretch page** (sets `duration` to the total; `start`/`end` stay). Exports and Play cut at the page length either way.
+- **Source check (v3.1).** For each video cut: `in + duration × |speed|` must not pass `media.out`. With a known generation length it must not pass that either, and `out` must not be past it. The generation length is `media.genSeconds`, else the `genSeconds` of a page whose `video` is the same clip (same `driveId` or file name). Stills are skipped. The card shows `⏱ cut source` and the drawer marks the cut.
 
 ### Takes and the generation log
 
@@ -246,10 +257,21 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
 
 ☰ → **Import cut list (CSV / EDL)…**, or **Cuts tab → Import cuts…**, takes a CMX3600 EDL or a CSV and **shows a preview before anything changes**. One undo reverts it.
 
-- **EDL:** video events only (audio and `BL` black events are skipped). `* FROM CLIP NAME:` gives the clip, and `M2` lines give the speed (`M2 … 048.0` at 24 fps = 2×).
+- **EDL:** video events only (audio and `BL` black events are skipped). `* FROM CLIP NAME:` gives the clip.
+- **Speed (v3.1), in this order:**
+  1. a `* SPEED: 50%` comment (negative = reverse);
+  2. otherwise **source duration ÷ record duration**;
+  3. `M2` only as a hint.
+
+  `M2` is ambiguous. Resolve writes a **percentage** (`M2 AX 050.0` = 50 %, `040.0` = 40 %), while classic CMX writes a **frame rate** (`012.0` at 24 fps = 50 %). The app picks whichever reading matches the comment or the ratio. Without either it assumes Resolve's percentage, unless the value equals the timeline fps.
+  - When the ratio is exactly 1 but `M2` says otherwise, the source out was not speed-adjusted: `M2` is used and the source out becomes in + record duration × speed. The same happens when a comment wins over a disagreeing ratio.
+  - Reverse (negative `M2`, a negative comment, or source in after source out) is kept as a negative `speed`.
+  - The preview shows every speed as a percentage and highlights it with ⚠ when the comment, ratio and M2 disagree; hover to see each value.
+  - Our own EDL export writes `* SPEED:` too, so it round-trips.
 - **CSV:** our own export, or a Resolve-style list with *Name/Clip, Source In, Source Out, Record In, Record Out, Speed (%), Duration*. Timecodes (`hh:mm:ss:ff`), `m:ss` and seconds all work.
 - **Clip matching:** by **file name** against the media in the open folder (case-insensitive; the extension may differ, e.g. `.mov` → `.mp4`). Unmatched clips keep the clip name as their `path`.
-- **Mode "pages by song time":** record time minus the record start (01:00:00:00 when the edit starts there, else 0), plus the song offset you enter, gives the song time. Each event goes to the active, non-`cut` page whose `start`–`end` contains it. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
+- **Only clips on the board (v3.1, option):** keeps only events whose clip matches media already on the board, in any page, cut or take, by file name or Drive ID. The excluded events (e.g. `CO_`, `BP_`, `STILL_` clips) are counted by prefix and listed. Folder matching searches all subfolders of the opened folder.
+- **Mode "pages by song time":** record time minus the record start (01:00:00:00 when the edit starts there, else 0), plus the song offset you enter, gives the song time. **v3.1:** an event edge within the **snap** tolerance of a page boundary (default 4 frames) snaps to it. The event then goes to the active, non-`cut` page that holds **most of its duration**, so an event starting 3 frames before page 16 lands on page 16. The preview marks snapped events (`⇥+3f`) and flags pages whose cuts would overrun; an option trims them on apply. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
 - **Mode "into the selected page's cuts":** all events replace that page's `cuts`, with per-cut `duration` and `speed`.
 
 ## Rules for editing safely
@@ -280,8 +302,9 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
 ## Song time checks (what the ⚠ means)
 
 - **Gap:** between two consecutive *linear* pages (that have `start`/`end`), song time that no page covers, e.g. `2:07 → 2:12`. Insert or flash pages placed between them count towards filling it. Flash-forwards and flashbacks elsewhere are never gaps. The header shows the gap count, the **total screen time** and the **song span**.
-- **Status `cut`:** these pages are ignored in the runtime and in the gap checks, so the song time they had shows as a **gap** unless another page covers it. That is deliberate: cutting a page opens a hole you need to fill (or close by moving the neighbours' times).
+- **Status `cut`:** these pages are ignored in the runtime and in the gap checks, so the song time they had shows as a **gap** unless another page covers it. That is deliberate: cutting a page opens a hole you need to fill (or close by moving the neighbours' times). **v3.1:** when the real edit bridged it, set `"bridged": true` on the cut page; its own `start`–`end` then counts as covered (no screen time is added). Only its own time is covered, so any gap beyond it still shows.
 - **Inactive alternatives** are ignored too; only the active scene of a slot and the active page of a group count.
+- **✂ Cut overrun / ⏱ cut source (v3.1):** see *Cuts*.
 - **⏱ Generation too short (v3):** only when `genSeconds` is set and the page has no `cuts`. The clip needs `page duration × |speed|` seconds of source starting at `video.in` (default 0) and ending at `video.out` or the end of the generation. It warns when that is longer than what the generation has, or when `video.out` is past `genSeconds`. A generation **longer** than the page is normal (a 6 s clip trimmed to 2 s) and never warns. Without `genSeconds` there is no ⏱ warning; v1/v2 guessed from "(6 s, …)" in the prompt, which caused false warnings.
 
 ## Exports for DaVinci Resolve
