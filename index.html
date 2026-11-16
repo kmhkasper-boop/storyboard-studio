@@ -14,7 +14,9 @@
 <header id="topbar">
   <div class="brand" title="Storyboard Studio">🎬</div>
   <input id="docTitle" class="title-input" placeholder="Untitled storyboard" aria-label="Storyboard title">
-  <span id="runtime" class="pill" title="Total runtime"></span>
+  <span id="runtime" class="pill" title="Total screen time"></span>
+  <span id="songSpan" class="pill"></span>
+  <span id="gapPill" class="pill warn"></span>
   <span id="modeBadge" class="pill mode"></span>
   <span id="saveState" class="pill"></span>
   <div class="spacer"></div>
@@ -37,9 +39,13 @@
       <button data-act="reload">⟳ Reload from disk</button>
       <button data-act="autolink">🔗 Auto-link media from folder…</button>
       <button data-act="importText">⬇ Import Mirrage text…</button>
+      <button data-act="cast">👥 Cast manager…</button>
       <hr>
       <button data-act="downloadJson">💾 Download storyboard JSON</button>
       <button data-act="exportMd">📝 Export Markdown (Mirrage format)</button>
+      <button data-act="exportCsv">📊 Export edit list CSV (Resolve)</button>
+      <button data-act="exportEdl">🎬 Export EDL (CMX3600)</button>
+      <button data-act="exportEdlText">📃 Export edit list (text)</button>
       <button data-act="print">🖨 Print / PDF</button>
       <hr>
       <button data-act="settings">⚙ Project settings…</button>
@@ -88,6 +94,7 @@
     <div id="plBlank"></div>
     <div id="plCaption"></div>
     <div id="plInfo"></div>
+    <div id="plFx" hidden></div>
   </div>
   <div class="pl-bar">
     <button id="plPrev" title="Previous (←)">⏮</button>
@@ -114,5 +121,6 @@
 <script src="vendor/Sortable.min.js"></script>
 <script src="lib.js"></script>
 <script src="app.js"></script>
+<datalist id="toolList"><option value="midjourney">Midjourney</option><option value="nanoBanana">Nano Banana</option><option value="imagine">Grok Imagine</option><option value="seedance">Seedance</option><option value="wan">Wan</option><option value="kling">Kling</option></datalist>
 </body>
 </html>

@@ -35,7 +35,7 @@
   let undoStack = [], redoStack = [], lastKey = null, lastKeyTime = 0;
   let dirty = false;
   let prefs = Object.assign({ name: 'Lucas', autosave: true, zoom: 240, showText: true }, safeJson(localStorage.getItem(LS_PREFS)) || {});
-  const local = { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonName: '', single: false };
+  const local = { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false };
   let remoteBase = null; // URL the doc was fetched from (media paths resolve relative to it)
   const urlCache = new Map();
   const sortables = [];
@@ -69,7 +69,7 @@
       const form = el('form', { onsubmit: (e) => { e.preventDefault(); const r = {}; for (const k in inputs) r[k] = inputs[k].value; closeModal(); res(r); } },
         el('h2', null, title),
         fields.map(f => el('div', { class: 'fld' }, el('label', null, f.label),
-          inputs[f.key] = f.multiline ? el('textarea', { rows: f.rows || 10, placeholder: f.placeholder || '' }) : el('input', { placeholder: f.placeholder || '', value: f.value || '' }),
+          inputs[f.key] = f.multiline ? el('textarea', { rows: f.rows || 10, placeholder: f.placeholder || '' }) : el('input', { placeholder: f.placeholder || '', value: f.value || '', list: f.list || null, 'data-key': f.key }),
           f.help ? el('div', { class: 'muted', style: { fontSize: '12px', marginTop: '3px' } }, f.help) : null)),
         el('div', { class: 'modal-actions' }, el('button', { type: 'button', onclick: () => { closeModal(); res(null); } }, 'Cancel'), el('button', { class: 'primary', type: 'submit' }, okLabel)));
       fields.forEach(f => { if (f.value && f.multiline) inputs[f.key].value = f.value; });
@@ -85,6 +85,9 @@
   }
   function pageNumber(id) { return allPages().findIndex(p => p.id === id) + 1; }
   const dur = (p) => S.pageDuration(p, doc);
+  /** Attaching media moves a page up the ladder: image -> rendered, video -> picked (never down). */
+  function bumpStatus(pg, type) { const rank = (x) => S.STATUS_IDS.indexOf(x); const want = type === 'video' ? 'picked' : 'rendered'; if (pg.status !== 'cut' && rank(pg.status) < rank(want)) pg.status = want; }
+  const lyr = (p) => S.lyricsFor(p, doc);
   const charById = (id) => doc.characters.find(c => c.id === id) || { id, name: id, color: '#888' };
 
   // ---------- undo / mutate ----------
@@ -226,9 +229,20 @@
     b.title = local.kind === 'files' ? 'This browser cannot write into folders. Save downloads the storyboard file; put it back in the folder.' : '';
   }
   function renderHeader() {
-    let total = 0, n = 0; for (const p of allPages()) { n++; if (p.status !== 'cut') total += dur(p); }
-    $('#runtime').textContent = n + ' pages · ' + S.fmtTime(total);
+    const tl = S.timeline(doc); const n = allPages().length;
+    $('#runtime').textContent = n + ' pages · ' + S.fmtTime(tl.screen);
+    $('#runtime').title = 'Total screen time (cut pages excluded)';
+    const sp = $('#songSpan');
+    sp.textContent = tl.songSpan !== null ? '♪ song ' + S.fmtTime(tl.songStart) + '–' + S.fmtTime(tl.songEnd) + ' (' + S.fmtTime(tl.songSpan) + ')' : '';
+    sp.title = 'Song span covered by page timecodes';
+    const g = $('#gapPill'); const bad = tl.gaps.length + tl.overlaps.length;
+    g.textContent = bad ? '⚠ ' + (tl.gaps.length ? tl.gaps.length + ' gap' + (tl.gaps.length > 1 ? 's' : '') : '') + (tl.gaps.length && tl.overlaps.length ? ', ' : '') + (tl.overlaps.length ? tl.overlaps.length + ' overlap' + (tl.overlaps.length > 1 ? 's' : '') : '') : '';
+    g.title = tl.gaps.map(x => 'gap ' + S.fmtTime(x.from, true) + ' → ' + S.fmtTime(x.to, true) + ' before page ' + pageNumber(x.pageId)).concat(tl.overlaps.map(x => 'overlap ' + S.fmtTime(x.from, true) + '–' + S.fmtTime(x.to, true) + ' at page ' + pageNumber(x.pageId))).join('\n') + (bad ? '\nClick to jump to the first one.' : '');
+    g.onclick = () => { const f = tl.gaps[0] || tl.overlaps[0]; if (f) { select(f.pageId); const c = document.querySelector('.card[data-id="' + f.pageId + '"]'); if (c) c.scrollIntoView({ block: 'center' }); } };
+    timelineCache = tl;
   }
+  let timelineCache = null;
+  function gapFor(id) { const tl = timelineCache || S.timeline(doc); return { gap: tl.gaps.find(x => x.pageId === id), overlap: tl.overlaps.find(x => x.pageId === id) }; }
   function renderFilters() {
     const fs = $('#fStatus'), fc = $('#fChar');
     if (fs.options.length === 1) S.STATUSES.forEach(s => fs.append(el('option', { value: s.id }, s.label)));
@@ -238,8 +252,8 @@
   function pageMatches(p) {
     const q = $('#search').value.trim().toLowerCase(), st = $('#fStatus').value, ch = $('#fChar').value;
     if (st && p.status !== st) return false;
-    if (ch && !p.characters.includes(ch)) return false;
-    if (q) { const hay = [p.title, p.code, p.lyric, p.description, p.camera, p.notes, p.imagePrompt, p.clipPrompt, p.flag].join(' ').toLowerCase(); if (!hay.includes(q)) return false; }
+    if (ch && !p.characters.some(r => r.charId === ch)) return false;
+    if (q) { const hay = [p.title, p.code, p.lyrics, p.description, p.camera, p.mood, p.notes, p.imagePrompt, p.videoPrompt, p.negativePrompt, p.flag].join(' ').toLowerCase(); if (!hay.includes(q)) return false; }
     return true;
   }
   function renderSidebar() {
@@ -256,17 +270,30 @@
     const open = p.comments.filter(c => !c.done).length;
     if (open) thumb.append(el('span', { class: 'badge-cm', title: open + ' open comment(s)' }, '💬 ' + open));
     if (p.flag) thumb.append(el('span', { class: 'flag', title: p.flag }, '⚑ ' + p.flag.slice(0, 18)));
+    if (p.role && p.role !== 'linear') thumb.append(el('span', { class: 'role role-' + p.role, title: S.ROLES.find(r => r.id === p.role).label }, { insert: 'INSERT', flashForward: '⏩ FLASH-FWD', flashBack: '⏪ FLASHBACK' }[p.role]));
     fillThumb(thumb, p);
+    const sp = S.speedOf(p); const warn = S.durationWarning(p, doc); const gi = gapFor(p.id);
+    const chips2 = [
+      sp !== 1 ? el('span', { class: 'chip spd', title: 'Playback speed' + (p.retime ? ' · ' + p.retime : '') }, (sp < 0 ? '◀◀ ' + Math.abs(sp) + '×' : Math.round(sp * 100) + '%') + (p.retime ? ' · ' + ({ frame: 'frame', blend: 'blend', opticalFlow: 'opt. flow', speedWarp: 'warp' }[p.retime]) : '')) : null,
+      p.effect ? el('span', { class: 'chip spd', title: 'Effect' }, '✦ ' + p.effect) : null,
+      p.cuts.length ? el('span', { class: 'chip', title: 'Cut sequence' }, '✂ ' + p.cuts.length + ' cuts') : null,
+      p.video && (p.video.in !== undefined || p.video.out !== undefined) ? el('span', { class: 'chip', title: 'Source in/out' }, '⇤⇥ ' + (p.video.in ?? 0) + '–' + (p.video.out ?? 'end') + 's') : null,
+      warn ? el('span', { class: 'chip warn', title: warn }, '⏱ ' + S.promptSeconds(p.videoPrompt) + 's prompt') : null,
+      gi.gap ? el('span', { class: 'gapchip', title: 'Song-time gap before this page' }, '⚠ gap ' + S.fmtTime(gi.gap.from, true) + '→' + S.fmtTime(gi.gap.to, true)) : null,
+      gi.overlap ? el('span', { class: 'gapchip', title: 'Overlaps the previous linear page' }, '⚠ overlap ' + (Math.round(gi.overlap.seconds * 10) / 10) + 's') : null
+    ].filter(Boolean);
     const tc = [p.start, p.end].filter(Boolean).join('–');
-    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out'), dataset: { id: p.id }, tabindex: 0 },
+    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out') + (p.role ? ' r-' + p.role : ''), dataset: { id: p.id }, tabindex: 0 },
       thumb,
       el('div', { class: 'body' },
         el('div', { class: 'row1' }, el('span', { class: 'st st-' + p.status, title: p.status }), tc ? el('span', { class: 'tc' }, tc) : null, el('span', { class: 'dur' }, (Math.round(dur(p) * 10) / 10) + 's')),
         p.title ? el('div', { class: 'ttl' }, p.title) : null,
-        p.lyric ? el('div', { class: 'lyr' }, p.lyric) : null,
+        lyr(p) ? el('div', { class: 'lyr' + (p.lyrics ? '' : ' auto'), title: p.lyrics ? '' : 'From the song lyrics' }, lyr(p)) : null,
         p.description ? el('div', { class: 'desc' }, p.description) : null,
-        p.characters.length ? el('div', { class: 'chars' }, p.characters.map(c => el('span', { class: 'chip', style: { borderColor: charById(c).color } }, charById(c).name))) : null));
+        p.characters.length ? el('div', { class: 'chars' }, p.characters.map(r => castChip(p, r))) : null,
+        chips2.length ? el('div', { class: 'chips2' }, chips2) : null));
     card.addEventListener('click', () => select(p.id));
+    card.addEventListener('dblclick', () => { drawer = true; select(p.id); renderEditor(); });
     card.addEventListener('keydown', (e) => { if (e.key === 'Enter') select(p.id); });
     addMediaDrop(card, p.id, null);
     return card;
@@ -335,11 +362,11 @@
       s.pages.forEach(p => {
         n++;
         const d = dur(p); const at = t; if (p.status !== 'cut') t += d;
-        const head = ['PAGE ' + S.pad2(n), p.start ? [p.start, p.end].filter(Boolean).join('–') : '@' + S.fmtTime(at), (Math.round(d * 10) / 10) + 's', p.camera, p.status.toUpperCase()].filter(Boolean).join(' · ');
-        const chars = p.characters.map(c => charById(c).name).join(', ');
+        const head = ['PAGE ' + S.pad2(n), p.start ? [p.start, p.end].filter(Boolean).join('–') : '@' + S.fmtTime(at), (Math.round(d * 10) / 10) + 's', p.camera, p.role && p.role !== 'linear' ? p.role.toUpperCase() : '', S.speedOf(p) !== 1 ? S.speedOf(p) + '×' + (p.retime ? ' ' + p.retime : '') : '', p.effect, p.cuts.length ? p.cuts.length + ' cuts' : '', p.status.toUpperCase()].filter(Boolean).join(' · ');
+        const chars = p.characters.map(r => charById(r.charId).name).join(', ');
         const sp = el('div', { class: 'sp' + (pageMatches(p) ? '' : ' filtered-out'), dataset: { id: p.id }, onclick: () => select(p.id) },
           el('div', { class: 'h' }, head + (p.title ? ' — ' + p.title : '')),
-          p.lyric ? el('div', { class: 'l' }, '♪ ' + p.lyric) : null,
+          lyr(p) ? el('div', { class: 'l' }, '♪ ' + lyr(p)) : null,
           p.description ? el('div', null, (chars ? chars.toUpperCase() + ' — ' : '') + p.description) : (chars ? el('div', null, chars) : null),
           p.notes ? el('div', { class: 'c' }, 'Note: ' + p.notes) : null,
           p.status === 'cut' ? el('div', { class: 'c' }, '(cut)') : null);
@@ -365,23 +392,58 @@
     const keepScroll = ed.scrollTop; ed.hidden = false; ed.innerHTML = '';
     const total = allPages().length;
     const field = (key, label, opts = {}) => {
-      const inp = opts.multiline ? el('textarea', { rows: opts.rows || 3, placeholder: opts.placeholder || '' }) : el('input', { placeholder: opts.placeholder || '' });
+      const inp = opts.multiline ? el('textarea', { rows: opts.rows || 3, placeholder: opts.placeholder || '' }) : el('input', Object.assign({ placeholder: opts.placeholder || '' }, opts.list ? { list: opts.list } : {}));
       inp.value = p[key] == null ? '' : p[key]; inp.dataset.field = key;
       inp.addEventListener('input', () => {
         mutate(() => { const x = findPage(p.id).page; x[key] = opts.number ? (parseFloat(inp.value) > 0 ? parseFloat(inp.value) : null) : inp.value; }, 'f:' + p.id + ':' + key, { render: false });
         updateCard(p.id); renderHeader(); if (view === 'script') renderScript();
       });
-      return el('div', { class: 'fld' }, el('label', null, label), inp);
+      return el('div', { class: 'fld' + (opts.cls ? ' ' + opts.cls : '') }, el('label', null, label, opts.extra || null), inp);
     };
     const statusSel = el('select', { 'data-field': 'status' }, S.STATUSES.map(s => el('option', { value: s.id }, s.label))); statusSel.value = p.status;
     statusSel.addEventListener('change', () => mutate(() => { findPage(p.id).page.status = statusSel.value; }));
     const sceneSel = el('select', { title: 'Move to scene', 'data-field': 'scene' }, doc.scenes.map(s => el('option', { value: s.id }, s.title))); sceneSel.value = scene.id;
     sceneSel.addEventListener('change', () => movePageToScene(p.id, sceneSel.value));
+    ed.classList.toggle('drawer', drawer);
+    const tabs = [['page', 'Page'], ['prompts', 'Prompts'], ['cast', 'Cast' + (p.characters.length ? ' ' + p.characters.length : '')], ['takes', 'Takes' + (p.takes.length ? ' ' + p.takes.length : '')], ['log', 'Log' + (p.genLog.length ? ' ' + p.genLog.length : '')]];
+    const copyBtn = (key) => el('button', { class: 'copy-btn', title: 'Copy to clipboard', onclick: (e) => { e.preventDefault(); copyText(findPage(p.id).page[key] || '', 'Prompt copied'); } }, '⧉ copy');
+    const promptBlock = (key, toolKey, label, ph) => el('div', { class: 'pblock' },
+      field(key, label, { multiline: true, rows: 4, placeholder: ph, extra: copyBtn(key) }),
+      field(toolKey, 'Tool', { list: 'toolList', placeholder: 'midjourney, nanoBanana, imagine, seedance, wan, kling… or any', cls: 'tool' }));
+    const autoLyr = !p.lyrics ? S.lyricsFor(p, doc) : '';
+    const body = {
+      page: () => [
+        editorWarnings(p),
+        el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Status'), statusSel), el('div', { class: 'fld' }, el('label', null, 'Scene'), sceneSel)),
+        el('div', { class: 'row' }, roleSel(p), speedField(p), retimeSel(p)),
+        field('effect', 'Effect', { placeholder: 'e.g. flicker, strobe' }),
+        mediaSlot(p, 'image'), mediaSlot(p, 'video'), cutsBox(p),
+        el('div', { class: 'row' }, field('start', 'Start (song time)', { placeholder: '1:57' }), field('end', 'End', { placeholder: '2:03' }), field('duration', 'Duration (s)', { number: true, placeholder: 'auto ' + (Math.round(dur(p) * 10) / 10) })),
+        el('div', { class: 'row' }, field('title', 'Short title', { placeholder: 'e.g. First breath' }), field('code', 'Code / old page no.', { placeholder: 'e.g. 03' })),
+        field('lyrics', 'Lyrics / dialogue', { multiline: true, rows: 2, placeholder: autoLyr ? '♪ from the song: ' + autoLyr : '',
+          extra: autoLyr ? el('button', { class: 'copy-btn lyr-fill', title: 'Copy the song lyrics for this time range into the page', onclick: (e) => { e.preventDefault(); mutate(() => { findPage(p.id).page.lyrics = autoLyr; }); } }, '♪ fill from song') : null }),
+        field('description', 'Description / action', { multiline: true, rows: 4 }),
+        el('div', { class: 'row' }, field('camera', 'Camera', { placeholder: 'e.g. medium shot, fast push-in' }), field('mood', 'Mood', { placeholder: 'e.g. eerie calm, neon dread' })),
+        charPicker(p),
+        field('notes', 'Notes', { multiline: true, rows: 2 }),
+        field('flag', 'Flag (needs Lucas OK…)', { placeholder: 'e.g. drink – Lucas to OK' }),
+        commentsBox(p)],
+      prompts: () => [
+        promptBlock('imagePrompt', 'imageTool', 'Image prompt', 'Still image prompt'),
+        promptBlock('videoPrompt', 'videoTool', 'Video prompt (image-to-video)', '(6 s, image-to-video) …'),
+        promptBlock('negativePrompt', 'negativeTool', 'Negative prompt', 'what to avoid'),
+        p.characters.length ? el('div', { class: 'muted', style: { fontSize: '12px' } }, 'Character blocks (canon + look + refs) are on the Cast tab.') : null],
+      cast: () => castTab(p, scene),
+      takes: () => takesTab(p),
+      log: () => logTab(p)
+    };
+    if (!body[edTab]) edTab = 'page';
     ed.append(
       el('div', { class: 'ed-head' },
         el('button', { title: 'Previous page', disabled: num <= 1, onclick: () => select(allPages()[num - 2].id) }, '‹'),
         el('h2', null, 'Page ' + num + ' / ' + total),
         el('button', { title: 'Next page', disabled: num >= total, onclick: () => select(allPages()[num].id) }, '›'),
+        el('button', { title: drawer ? 'Narrow editor' : 'Open the large breakout drawer (or double-click a page)', class: 'ed-drawer', onclick: () => { drawer = !drawer; renderEditor(); } }, drawer ? '⇥' : '⤢'),
         el('button', { title: 'Close', class: 'ed-close', onclick: () => select(null) }, '✕')),
       el('div', { class: 'ed-tools' },
         el('button', { class: 'ed-up', onclick: () => movePage(p.id, -1), title: 'Move earlier' }, '↑ Earlier'),
@@ -390,28 +452,348 @@
         el('button', { class: 'ed-dup', onclick: () => duplicatePage(p.id) }, '⧉ Duplicate'),
         el('button', { onclick: () => play(p.id) }, '▶ From here'),
         el('button', { class: 'danger ed-del', onclick: () => deletePage(p.id) }, '🗑 Delete')),
-      el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Status'), statusSel), el('div', { class: 'fld' }, el('label', null, 'Scene'), sceneSel)),
-      mediaSlot(p, 'image'), mediaSlot(p, 'video'),
-      el('div', { class: 'row' }, field('start', 'Start (song time)', { placeholder: '1:57' }), field('end', 'End', { placeholder: '2:03' }), field('duration', 'Duration (s)', { number: true, placeholder: 'auto ' + (Math.round(dur(p) * 10) / 10) })),
-      el('div', { class: 'row' }, field('title', 'Short title', { placeholder: 'e.g. First breath' }), field('code', 'Code / old page no.', { placeholder: 'e.g. 03' })),
-      field('lyric', 'Lyric / dialogue', { multiline: true, rows: 2 }),
-      field('description', 'Description / action', { multiline: true, rows: 4 }),
-      field('camera', 'Camera', { placeholder: 'e.g. medium shot, fast push-in' }),
-      charPicker(p),
-      field('imagePrompt', 'Image prompt', { multiline: true, rows: 4 }),
-      field('clipPrompt', 'Clip prompt (image-to-video)', { multiline: true, rows: 3 }),
-      field('notes', 'Notes', { multiline: true, rows: 2 }),
-      field('flag', 'Flag (needs Lucas OK…)', { placeholder: 'e.g. drink – Lucas to OK' }),
-      commentsBox(p),
+      el('div', { class: 'ed-tabs', role: 'tablist' }, tabs.map(([id, label]) => el('button', { class: 'tab-' + id + (edTab === id ? ' on' : ''), onclick: () => { edTab = id; renderEditor(); } }, label))),
+      el('div', { class: 'ed-body ed-' + edTab }, body[edTab]()),
       el('div', { class: 'muted', style: { fontSize: '11px', marginTop: '10px' } }, 'id: ' + p.id)
     );
     ed.scrollTop = keepScroll;
   }
+  function editorWarnings(p) {
+    const w = []; const dw = S.durationWarning(p, doc); if (dw) w.push('⏱ ' + dw);
+    const gi = gapFor(p.id);
+    if (gi.gap) w.push('⚠ Song-time gap: nothing covers ' + S.fmtTime(gi.gap.from, true) + ' → ' + S.fmtTime(gi.gap.to, true) + ' (' + (Math.round(gi.gap.seconds * 10) / 10) + ' s) before this page. Fill it, or set the role of an out-of-order page to Insert / Flash-forward / Flashback.');
+    if (gi.overlap) w.push('⚠ Overlaps the previous linear page by ' + (Math.round(gi.overlap.seconds * 10) / 10) + ' s of song time.');
+    return w.length ? el('div', { class: 'ed-warn' }, w.map(t => el('div', null, t))) : null;
+  }
+  function roleSel(p) {
+    const sel = el('select', { 'data-field': 'role' }, S.ROLES.map(r => el('option', { value: r.id }, r.label))); sel.value = p.role || 'linear';
+    sel.addEventListener('change', () => mutate(() => { findPage(p.id).page.role = sel.value === 'linear' ? '' : sel.value; }));
+    return el('div', { class: 'fld' }, el('label', { title: 'Linear pages follow the song. Inserts and flashes may sit anywhere in song time.' }, 'Role'), sel);
+  }
+  function speedField(p) {
+    const inp = el('input', { type: 'number', step: '0.05', placeholder: '1 = normal', 'data-field': 'speed', title: '1 = normal · 0.4 = 40% slow motion · 2 = double · negative = reverse' });
+    inp.value = p.speed == null ? '' : p.speed;
+    inp.addEventListener('input', () => {
+      const v = parseFloat(inp.value);
+      mutate(() => { findPage(p.id).page.speed = isFinite(v) && v !== 0 && v !== 1 ? v : (v === 1 ? 1 : null); }, 'f:' + p.id + ':speed', { render: false });
+      updateCard(p.id); renderHeader();
+    });
+    return el('div', { class: 'fld' }, el('label', null, 'Speed (×)'), inp);
+  }
+  function retimeSel(p) {
+    const sel = el('select', { 'data-field': 'retime' }, el('option', { value: '' }, '—'), S.RETIMES.map(r => el('option', { value: r.id }, r.label))); sel.value = p.retime || '';
+    sel.addEventListener('change', () => mutate(() => { findPage(p.id).page.retime = sel.value; }));
+    return el('div', { class: 'fld' }, el('label', { title: 'How the editor (Resolve) should retime. Label only: the preview uses plain playback speed.' }, 'Retime'), sel);
+  }
+  function driftLine(m) {
+    if (!m) return null;
+    const bits = [m.version ? 'version ' + m.version : '', m.modifiedTime ? 'modified ' + m.modifiedTime.replace('T', ' ').slice(0, 19) : '', m.md5 ? 'md5 ' + m.md5.slice(0, 10) + '…' : ''].filter(Boolean);
+    return bits.length ? el('div', { class: 'drift', title: m.md5 ? 'md5 ' + m.md5 : '' }, bits.join(' · ')) : null;
+  }
+  const numOrUndef = (v) => { const n = parseFloat(v); return isFinite(n) && n >= 0 ? Math.round(n * 1000) / 1000 : undefined; };
+  /** in/out inputs for a media object; get() returns the live media object inside a mutate */
+  function inOutRow(pid, get, videoEl, key) {
+    const m = get(findPage(pid).page) || {};
+    const mk = (k) => {
+      const inp = el('input', { type: 'number', step: '0.01', min: 0, placeholder: k === 'in' ? '0' : 'end', 'data-field': 'media-' + k });
+      inp.value = m[k] === undefined ? '' : m[k];
+      inp.addEventListener('input', () => { mutate(() => { const x = get(findPage(pid).page); if (!x) return; const v = numOrUndef(inp.value); if (v === undefined) delete x[k]; else x[k] = v; }, 'f:' + pid + ':' + key + k, { render: false }); updateCard(pid); renderHeader(); });
+      return inp;
+    };
+    const iIn = mk('in'), iOut = mk('out');
+    const setFrom = (k, inp) => () => {
+      const v = videoEl && videoEl(); if (!v) return toast('Play or scrub the video above first');
+      inp.value = Math.round(v.currentTime * 100) / 100; inp.dispatchEvent(new Event('input'));
+    };
+    return el('div', { class: 'inout' },
+      el('div', { class: 'fld' }, el('label', null, 'Source in (s)'), iIn),
+      el('div', { class: 'fld' }, el('label', null, 'Source out (s)'), iOut),
+      videoEl ? el('button', { class: 'set-in', title: 'Set source in from the current frame of the video above', onclick: setFrom('in', iIn) }, '⇤ in = frame') : null,
+      videoEl ? el('button', { class: 'set-out', title: 'Set source out from the current frame of the video above', onclick: setFrom('out', iOut) }, 'out = frame ⇥') : null);
+  }
+  function cutsBox(p) {
+    const list = el('div', { class: 'cuts' });
+    p.cuts.forEach((c, i) => {
+      const num = (k, ph, title) => {
+        const inp = el('input', { type: 'number', step: '0.01', placeholder: ph, title, class: 'cut-' + k });
+        const src = k === 'in' || k === 'out' ? c.media : c; inp.value = src[k] == null ? '' : src[k];
+        inp.addEventListener('input', () => {
+          mutate(() => {
+            const x = findPage(p.id).page.cuts[i]; const v = parseFloat(inp.value);
+            if (k === 'in' || k === 'out') { const n = numOrUndef(inp.value); if (n === undefined) delete x.media[k]; else x.media[k] = n; }
+            else x[k] = isFinite(v) && v !== 0 && (k === 'speed' || v > 0) ? v : null;
+          }, 'f:' + p.id + ':cut' + i + k, { render: false });
+          updateCard(p.id); renderHeader();
+        });
+        return inp;
+      };
+      const move = (d) => mutate(() => { const a = findPage(p.id).page.cuts; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; });
+      list.append(el('div', { class: 'cut', dataset: { i } },
+        el('b', null, (i + 1) + '.'), el('span', { class: 'nm', title: mediaLabel(c.media) }, c.media.name || c.media.path || c.media.driveId || 'link'),
+        'in', num('in', '0', 'Source in (s)'), 'out', num('out', 'end', 'Source out (s)'), 'dur', num('duration', 'auto', 'On-screen duration (s); empty = share the page evenly'), '×', num('speed', '1', 'Speed (negative = reverse)'),
+        el('button', { class: 'cut-up', title: 'Earlier', disabled: i === 0, onclick: () => move(-1) }, '↑'),
+        el('button', { class: 'cut-down', title: 'Later', disabled: i === p.cuts.length - 1, onclick: () => move(1) }, '↓'),
+        el('button', { class: 'danger cut-del', title: 'Remove cut', onclick: () => mutate(() => { findPage(p.id).page.cuts.splice(i, 1); }) }, '✕')));
+    });
+    const addCut = (media) => mutate(() => { findPage(p.id).page.cuts.push({ media, duration: null, speed: null }); });
+    const fromFile = () => {
+      const inp = $('#fileMedia'); inp.accept = 'video/*,image/*'; inp.multiple = true; inp.value = '';
+      inp.onchange = async () => { const fs = Array.from(inp.files); inp.multiple = false; for (const f of fs) { const m = await mediaFromFile(f, IMG_EXT.test(f.name) ? 'image' : 'video'); if (m) addCut(m); } };
+      inp.click();
+    };
+    const fromLink = async () => {
+      const r = await promptModal('Add cut', [{ key: 'drive', label: 'Google Drive link or file ID (optional)', placeholder: 'https://drive.google.com/file/d/…' }, { key: 'path', label: 'Path inside the project folder', placeholder: 'e.g. bp-sb2-clips/SB2_01_v2.mp4' }], 'Add');
+      if (!r) return; const id = S.parseDriveId(r.drive.trim()); const path = normPath(r.path.trim());
+      if (!id && !path) return; const nm = path ? mref(path, path.split('/').pop()) : { driveId: '', path: '', url: '', name: '' }; nm.driveId = id || ''; addCut(S.normMedia(nm));
+    };
+    return el('div', { class: 'fld cutsfld' }, el('label', { title: 'Fast cut / flicker burst: plays these in order inside the page length, looping if they are shorter.' }, '✂ Cuts (' + p.cuts.length + ')' + (p.cuts.length ? ' · ' + (Math.round(p.cuts.reduce((a, c) => a + (c.duration || 0), 0) * 100) / 100 || 'auto') + ' s' : '')), list,
+      el('div', { class: 'btns' },
+        el('button', { class: 'cut-add-file', onclick: fromFile }, '+ File…'),
+        hasFolder() ? el('button', { class: 'cut-add-folder', onclick: () => pickFromFolder(p.id, 'video', (rel) => addCut(mref(rel, rel.split('/').pop()))) }, '+ From folder…') : null,
+        el('button', { class: 'cut-add-link', onclick: fromLink }, '+ Drive link / path…'),
+        p.video && !p.cuts.length ? el('button', { class: 'cut-add-self', title: 'Start a cut list with the page video', onclick: () => addCut(JSON.parse(JSON.stringify(p.video))) }, '+ Page video') : null));
+  }
+  // ---------- v2: cast, takes, generation log ----------
+  let edTab = 'page', drawer = false;
+  let lastCopied = '';
+  async function copyText(t, msg) {
+    lastCopied = t;
+    try { await navigator.clipboard.writeText(t); }
+    catch { const ta = el('textarea', { style: { position: 'fixed', opacity: 0 } }); ta.value = t; document.body.append(ta); ta.select(); try { document.execCommand('copy'); } catch { } ta.remove(); }
+    toast(msg || 'Copied');
+  }
+  function mediaThumbInto(img, m, size) {
+    resolveMedia(m).then(r => { if (!r) { img.remove(); return; } img.src = r.kind === 'drive' ? driveThumb(m.driveId, size || 96) : r.src; }).catch(() => img.remove());
+    img.onerror = () => img.remove();
+    return img;
+  }
+  /** card chip for a character: thumbnail of the chosen look's first ref image + name */
+  function castChip(p, r) {
+    const c = charById(r.charId); const f = findPage(p.id); const e = S.effectiveLook(doc, f && f.scene, p, r.charId);
+    const thumb = e && e.thumbs[0];
+    return el('span', { class: 'chip castchip', style: { borderColor: c.color }, title: c.name + (e && e.look ? ' · ' + e.look.label : '') + (e && Object.keys(e.overrides).length ? ' (override)' : '') },
+      thumb ? mediaThumbInto(el('img', { alt: '', class: 'cthumb' }), thumb, 64) : null, c.name, e && e.look ? el('span', { class: 'lk' }, ' · ' + e.look.label) : null);
+  }
+  function castTab(p, scene) {
+    const box = el('div', { class: 'cast' });
+    const tool = el('input', { list: 'toolList', placeholder: 'tool for the prompt block', class: 'cast-tool', value: p.imageTool || p.videoTool || '' });
+    if (!doc.characters.length) box.append(el('p', { class: 'muted' }, 'No characters yet. Add some in the cast manager.'));
+    for (const r of p.characters) {
+      const c = charById(r.charId); const e = S.effectiveLook(doc, scene, p, r.charId);
+      if (!e) continue;
+      const sel = el('select', { class: 'look-sel', title: 'Look for this page' }, el('option', { value: '' }, '(scene / default: ' + ((S.effectiveLook(doc, scene, Object.assign({}, p, { characters: [] }), r.charId) || {}).look || { label: 'none' }).label + ')'), e.char.looks.map(l => el('option', { value: l.id }, l.label)));
+      sel.value = r.lookId || '';
+      sel.addEventListener('change', () => mutate(() => { const x = findPage(p.id).page.characters.find(q => q.charId === r.charId); x.lookId = sel.value; }));
+      const thumbs = el('div', { class: 'thumbs' }, e.thumbs.slice(0, 6).map(m => mediaThumbInto(el('img', { alt: '', title: m.path || m.name || m.driveId }), m, 160)));
+      const conf = S.canonConflicts(e.char.canon, S.LOOK_FIELDS.map(k => e.merged[k]).join('. '));
+      const lk = S.LOOK_FIELDS.filter(k => e.merged[k]).map(k => el('span', { class: 'kv' + (e.overrides[k] !== undefined ? ' ov' : '') }, k + ': ' + e.merged[k]));
+      const card = el('div', { class: 'castcard', dataset: { char: r.charId }, title: 'Double-click to edit the look', ondblclick: (ev) => { if (!ev.target.closest('select,button,input')) lookEditor(p.id, r.charId); } },
+        el('div', { class: 'ch' }, el('b', { style: { color: c.color } }, c.name), ' ', sel,
+          el('button', { class: 'look-edit', onclick: () => lookEditor(p.id, r.charId), title: 'Edit look (or double-click the card)' }, '✎ Look'),
+          el('button', { class: 'copy-btn cast-copy', title: 'Copy the character block (canon + look + overrides + refs) for the tool', onclick: () => copyText(S.promptBlock(doc, scene, p, r.charId, tool.value.trim()), 'Character block copied') }, '⧉ prompt block')),
+        e.char.canon ? el('div', { class: 'canon' }, '🔒 ' + e.char.canon) : null,
+        el('div', { class: 'muted src' }, e.look ? 'look "' + e.look.label + '" from ' + e.source + (Object.keys(e.overrides).length ? ' + overrides' : '') : 'no look yet', e.refSet ? ' · refs: ' + e.refSet.label : ''),
+        lk.length ? el('div', { class: 'kvs' }, lk) : null,
+        conf.length ? el('div', { class: 'ed-warn canon-warn' }, '⚠ ' + conf.join(' · ')) : null,
+        thumbs);
+      box.append(card);
+    }
+    // scene-level default looks
+    const sceneRows = scene.pages.some(q => q.characters.length) || scene.characters.length ? doc.characters.filter(c => c.looks.length).map(c => {
+      const sr = scene.characters.find(q => q.charId === c.id);
+      const sel = el('select', { class: 'scene-look', dataset: { char: c.id } }, el('option', { value: '' }, '(character default)'), c.looks.map(l => el('option', { value: l.id }, l.label)));
+      sel.value = sr ? sr.lookId : '';
+      sel.addEventListener('change', () => mutate(d => { const s = d.scenes.find(x => x.id === scene.id); const x = s.characters.find(q => q.charId === c.id); if (x) { x.lookId = sel.value; if (!x.lookId && !Object.keys(x.overrides).length) s.characters = s.characters.filter(q => q !== x); } else if (sel.value) s.characters.push({ charId: c.id, lookId: sel.value, overrides: {} }); }));
+      return el('div', { class: 'row' }, el('span', { style: { minWidth: '90px' } }, c.name), sel);
+    }) : [];
+    box.append(el('div', { class: 'fld' }, el('label', null, 'Prompt block tool'), tool));
+    if (sceneRows.length) box.append(el('div', { class: 'fld' }, el('label', { title: 'Page look beats scene look beats the character default.' }, 'Scene "' + scene.title + '" looks'), sceneRows));
+    box.append(charPicker(p), el('button', { class: 'cast-manage', onclick: () => castManager() }, '👥 Cast manager…'));
+    return box;
+  }
+  /** Look editor for one character on one page: save as a new look, or override just here. */
+  function lookEditor(pageId, charId) {
+    const f = findPage(pageId); const p = f.page; const e = S.effectiveLook(doc, f.scene, p, charId); if (!e) return;
+    const ch = e.char; const inputs = {};
+    const rs = el('select', { class: 'le-refset' }, el('option', { value: '' }, '(no ref set)'), ch.refSets.map(r => el('option', { value: r.id }, r.label))); rs.value = e.refSet ? e.refSet.id : '';
+    const warn = el('div', { class: 'ed-warn le-warn', hidden: true });
+    const check = () => { const c = S.canonConflicts(ch.canon, S.LOOK_FIELDS.map(k => inputs[k].value).join('. ')); warn.hidden = !c.length; warn.textContent = '⚠ Contradicts canon: ' + c.join(' · '); };
+    const fields = S.LOOK_FIELDS.map(k => { inputs[k] = el(k === 'notes' ? 'textarea' : 'input', { class: 'le-' + k, rows: 2 }); inputs[k].value = e.merged[k] || ''; inputs[k].addEventListener('input', check); return el('div', { class: 'fld' }, el('label', null, k), inputs[k]); });
+    const label = el('input', { class: 'le-label', placeholder: 'new look name, e.g. Rain-soaked' });
+    const collect = () => { const o = {}; for (const k of S.LOOK_FIELDS) o[k] = inputs[k].value.trim(); return o; };
+    const box = el('div', { class: 'look-editor' }, el('h2', null, '✎ ' + ch.name + ' — look on page ' + pageNumber(pageId)),
+      ch.canon ? el('div', { class: 'canon' }, el('b', null, '🔒 Canon (locked): '), ch.canon) : el('div', { class: 'muted' }, 'No canon notes yet (cast manager).'),
+      el('div', { class: 'fld' }, el('label', null, 'Reference set'), rs),
+      el('div', { class: 'grid2' }, fields), warn,
+      el('div', { class: 'fld' }, el('label', null, 'Name for “Save as new look”'), label),
+      el('div', { class: 'modal-actions' },
+        el('button', { onclick: closeModal }, 'Cancel'),
+        el('button', { class: 'le-override', title: 'Keep the look, store only the differences on this page', onclick: () => {
+          const v = collect(); const base = e.look || {}; const ov = {};
+          for (const k of S.LOOK_FIELDS) if (v[k] !== (base[k] || '')) ov[k] = v[k];
+          if (rs.value && rs.value !== (base.refSetId || '')) ov.refSetId = rs.value;
+          mutate(() => { const x = findPage(pageId).page.characters.find(q => q.charId === charId); x.overrides = ov; if (!x.lookId && e.lookId && e.source === 'page') x.lookId = e.lookId; });
+          closeModal(); toast(Object.keys(ov).length ? 'Override saved on this page' : 'No differences: override cleared');
+        } }, 'Override just here'),
+        el('button', { class: 'primary le-new', onclick: () => {
+          const v = collect(); const lab = label.value.trim() || 'Look ' + (ch.looks.length + 1);
+          let id = S.slug(lab) || 'look'; while (ch.looks.find(l => l.id === id)) id += '-2';
+          mutate(d => { const c = d.characters.find(x => x.id === charId); c.looks.push(Object.assign({ id, label: lab, refSetId: rs.value }, v)); const x = findPage(pageId).page.characters.find(q => q.charId === charId); x.lookId = id; x.overrides = {}; });
+          closeModal(); toast('Saved look "' + lab + '"');
+        } }, 'Save as new look')));
+    modal(box); check();
+  }
+  function takeMedia(t) { const m = {}; for (const k of ['driveId', 'path', 'url', 'name', 'in', 'out', 'md5', 'modifiedTime', 'version']) if (t[k] !== undefined && t[k] !== '') m[k] = t[k]; return S.normMedia(m); }
+  function takesTab(p) {
+    const box = el('div', { class: 'takes' });
+    const isVid = (t) => VID_EXT.test(t.path || t.name || t.url || '');
+    const viewer = (t) => {
+      const w = el('div', { class: 'tview' });
+      resolveMedia(t).then(r => {
+        if (!r) { w.append(el('div', { class: 'muted' }, 'not found')); return; }
+        if (r.playable && isVid(t)) w.append(el('video', { src: r.src, controls: true, playsinline: true, preload: 'metadata', muted: true }));
+        else w.append(mediaThumbInto(el('img', { alt: '' }), t, 640));
+      }).catch(() => {});
+      return w;
+    };
+    p.takes.forEach((t, i) => {
+      const inp = (k, ph, w) => { const x = el('input', { value: t[k] || '', placeholder: ph, class: 'take-' + k, style: { width: w }, list: k === 'tool' ? 'toolList' : null }); x.addEventListener('input', () => mutate(() => { findPage(p.id).page.takes[i][k] = x.value; }, 'f:' + p.id + ':take' + i + k, { render: false })); return x; };
+      box.append(el('div', { class: 'take' + (t.pick ? ' picked' : ''), dataset: { i } },
+        viewer(t),
+        el('div', { class: 'tmeta' },
+          el('div', { class: 'nm', title: mediaLabel(t) }, (t.pick ? '★ ' : '') + (t.name || t.path || t.driveId || 'take ' + (i + 1))),
+          el('div', { class: 'row' }, inp('version', 'v1', '60px'), inp('tool', 'tool', '110px'), inp('note', 'note', '100%')),
+          el('div', { class: 'btns' },
+            el('button', { class: 'take-pick' + (t.pick ? ' primary' : ''), title: 'Use this take as the page media', onclick: () => pickTake(p.id, i) }, t.pick ? '★ Picked' : '☆ Pick'),
+            el('button', { class: 'danger take-del', onclick: () => mutate(() => { findPage(p.id).page.takes.splice(i, 1); }) }, '✕')))));
+    });
+    const addTake = (m) => mutate(() => { const pg = findPage(p.id).page; pg.takes.push(Object.assign(m, { tool: '', note: '', pick: false })); if (pg.status === 'idea' || pg.status === 'prompted') pg.status = 'rendered'; });
+    const fromFile = () => {
+      const inp = $('#fileMedia'); inp.accept = 'video/*,image/*'; inp.multiple = true; inp.value = '';
+      inp.onchange = async () => { const fs = Array.from(inp.files); inp.multiple = false; for (const f of fs) { const m = await mediaFromFile(f, IMG_EXT.test(f.name) ? 'image' : 'video'); if (m) addTake(m); } };
+      inp.click();
+    };
+    const fromLink = async () => {
+      const r = await promptModal('Add take', [{ key: 'drive', label: 'Google Drive link or file ID (optional)' }, { key: 'path', label: 'Path inside the project folder', placeholder: 'e.g. bp-sb2-clips/SB2_03_v3.mp4' }], 'Add');
+      if (!r) return; const id = S.parseDriveId(r.drive.trim()); const path = normPath(r.path.trim()); if (!id && !path) return;
+      const m = path ? mref(path, path.split('/').pop()) : { driveId: '', path: '', url: '', name: '' }; m.driveId = id || ''; addTake(S.normMedia(m));
+    };
+    // compare
+    if (p.takes.length >= 2) {
+      const a = el('select', { class: 'cmp-a' }), b = el('select', { class: 'cmp-b' });
+      p.takes.forEach((t, i) => { const lab = (i + 1) + '. ' + (t.version || '') + ' ' + (t.tool || '') + ' ' + (t.name || ''); a.append(el('option', { value: i }, lab)); b.append(el('option', { value: i }, lab)); });
+      a.value = 0; b.value = 1;
+      const mode = el('select', { class: 'cmp-mode' }, el('option', { value: 'side' }, 'side by side'), el('option', { value: 'toggle' }, 'toggle A/B'));
+      const stage = el('div', { class: 'cmp-stage' }); let showB = false;
+      const draw = () => {
+        stage.innerHTML = ''; stage.className = 'cmp-stage ' + mode.value;
+        if (mode.value === 'side') stage.append(el('div', null, el('b', null, 'A'), viewer(p.takes[a.value])), el('div', null, el('b', null, 'B'), viewer(p.takes[b.value])));
+        else stage.append(el('div', null, el('b', { class: 'cmp-which' }, showB ? 'B' : 'A'), viewer(p.takes[showB ? b.value : a.value])), el('button', { class: 'cmp-flip', onclick: () => { showB = !showB; draw(); } }, '⇄ Flip A/B'));
+      };
+      [a, b, mode].forEach(x => x.addEventListener('change', draw));
+      box.prepend(el('div', { class: 'fld compare' }, el('label', null, 'Compare takes'), el('div', { class: 'row' }, a, b, mode), stage));
+      draw();
+    }
+    box.append(el('div', { class: 'btns' },
+      el('button', { class: 'take-add-file', onclick: fromFile }, '+ File…'),
+      hasFolder() ? el('button', { class: 'take-add-folder', onclick: () => pickFromFolder(p.id, 'video', (rel) => addTake(mref(rel, rel.split('/').pop()))) }, '+ From folder…') : null,
+      el('button', { class: 'take-add-link', onclick: fromLink }, '+ Drive link / path…'),
+      (p.video || p.image) && !p.takes.length ? el('button', { class: 'take-add-current', onclick: () => mutate(() => { const pg = findPage(p.id).page; pg.takes.push(Object.assign(JSON.parse(JSON.stringify(pg.video || pg.image)), { tool: pg.video ? pg.videoTool : pg.imageTool, note: '', pick: true })); }) }, '+ Current media as take 1') : null));
+    if (!p.takes.length) box.prepend(el('p', { class: 'muted' }, 'Keep every render here (v1, v2, other tools). The picked take becomes the page image or video.'));
+    return box;
+  }
+  function pickTake(pageId, i) {
+    mutate(() => {
+      const pg = findPage(pageId).page; pg.takes.forEach((t, k) => { t.pick = k === i; });
+      const t = pg.takes[i]; const m = takeMedia(t); const slot = VID_EXT.test(t.path || t.name || t.url || '') ? 'video' : 'image';
+      pg[slot] = m; const rank = (x) => S.STATUS_IDS.indexOf(x); if (pg.status !== 'cut' && rank(pg.status) < rank('picked')) pg.status = 'picked';
+    });
+    toast('Take ' + (i + 1) + ' is now the page media');
+  }
+  function logTab(p) {
+    const box = el('div', { class: 'genlog' });
+    if (!p.genLog.length) box.append(el('p', { class: 'muted' }, 'Generation log: which tool and model made what, the cost, and who approved it.'));
+    p.genLog.forEach((g, i) => box.append(el('div', { class: 'gl' },
+      el('div', null, el('b', null, S.toolLabel(g.tool) || '?'), g.model ? ' · ' + g.model : '', g.resolution ? ' · ' + g.resolution : '', g.seconds !== null ? ' · ' + g.seconds + ' s' : '', g.credits !== null ? ' · ' + g.credits + ' credits' : '',
+        el('button', { class: 'danger gl-del', style: { float: 'right', padding: '0 6px' }, onclick: () => mutate(() => { findPage(p.id).page.genLog.splice(i, 1); }) }, '✕')),
+      g.approvedBy || g.approvedAt ? el('div', { class: 'muted' }, '✔ approved' + (g.approvedBy ? ' by ' + g.approvedBy : '') + (g.approvedAt ? ' · ' + S.fmtStamp(g.approvedAt) : '')) : null,
+      g.quote ? el('div', { class: 'q' }, '“' + g.quote + '”') : null)));
+    box.append(el('button', { class: 'gl-add', onclick: async () => {
+      const last = p.genLog[p.genLog.length - 1] || {};
+      const r = await promptModal('Add generation log entry', [
+        { key: 'tool', label: 'Tool', value: last.tool || p.videoTool || p.imageTool || '', list: 'toolList' }, { key: 'model', label: 'Model', value: last.model || '', placeholder: 'e.g. Kling 2.1 Master' },
+        { key: 'resolution', label: 'Resolution', value: last.resolution || '', placeholder: '1080p' }, { key: 'seconds', label: 'Seconds', value: String(S.promptSeconds(p.videoPrompt) || '') },
+        { key: 'credits', label: 'Credits', placeholder: 'e.g. 35' }, { key: 'approvedBy', label: 'Approved by', value: prefs.name || 'Lucas' },
+        { key: 'approvedAt', label: 'Approved at', value: S.isoLocal(new Date()) }, { key: 'quote', label: 'Quote / approval words', placeholder: '“yes, this one”' }], 'Add');
+      if (!r) return;
+      mutate(() => { findPage(p.id).page.genLog.push(S.normGen(r)); });
+    } }, '+ Add entry'));
+    return box;
+  }
+  /** Cast manager: characters, canon, ref sets, looks, "used in". Works on a copy; Save applies it (one undo step). */
+  function castManager(focusId) {
+    const work = JSON.parse(JSON.stringify(doc.characters)); let cur = focusId || (work[0] && work[0].id) || ''; let canonOpen = false;
+    const box = el('div', { class: 'castmgr' });
+    const tmpDoc = () => Object.assign({}, doc, { characters: work });
+    const used = (cid, what) => { const u = S.usedIn(tmpDoc(), cid, what); return el('div', { class: 'muted used' }, 'Used in: ' + (u.length ? u.map(x => x.label).join(', ') : 'nothing yet')); };
+    const txt = (o, k, ph, cls, multi) => { const x = el(multi ? 'textarea' : 'input', { placeholder: ph || '', class: cls || '', rows: 2 }); x.value = o[k] || ''; x.addEventListener('input', () => { o[k] = x.value; }); return x; };
+    const draw = () => {
+      box.innerHTML = '';
+      const c = work.find(x => x.id === cur);
+      const list = el('div', { class: 'cm-list' }, work.map(x => el('button', { class: 'cm-char' + (x.id === cur ? ' on' : ''), style: { borderColor: x.color }, onclick: () => { cur = x.id; canonOpen = false; draw(); } }, x.name)),
+        el('button', { class: 'cm-addchar', onclick: () => { const id = 'char' + (work.length + 1); work.push(S.normCharacter({ id, name: 'New character' }, work.length)); cur = id; draw(); } }, '+ character'));
+      const detail = el('div', { class: 'cm-detail' });
+      if (c) {
+        const canon = el('textarea', { rows: 3, class: 'cm-canon', readonly: !canonOpen }); canon.value = c.canon; canon.addEventListener('input', () => { c.canon = canon.value; });
+        detail.append(
+          el('div', { class: 'row' }, el('input', { type: 'color', value: c.color, style: { width: '36px', padding: 0 }, oninput: (e) => { c.color = e.target.value; } }), txt(c, 'name', 'Name', 'cm-name'),
+            el('button', { class: 'danger', onclick: () => { if (confirm('Delete ' + c.name + '? Pages keep the id until you remove it.')) { work.splice(work.indexOf(c), 1); cur = work[0] ? work[0].id : ''; draw(); } } }, '🗑')),
+          el('div', { class: 'fld' }, el('label', null, (canonOpen ? '🔓' : '🔒') + ' Canon (locked notes) ', el('button', { class: 'cm-unlock copy-btn', onclick: () => { canonOpen = !canonOpen; draw(); } }, canonOpen ? 'lock' : 'unlock to edit')), canon),
+          el('h3', null, 'Reference sets'));
+        c.refSets.forEach((r, ri) => {
+          const imgs = el('div', { class: 'thumbs' }, r.images.map((m, mi) => el('span', { class: 'ri' }, mediaThumbInto(el('img', { alt: '', title: m.path || m.driveId }), m, 160), el('button', { class: 'danger', onclick: () => { r.images.splice(mi, 1); draw(); } }, '✕'))));
+          const pub = el('input', { type: 'checkbox' }); pub.checked = r.publicOnly; pub.onchange = () => { r.publicOnly = pub.checked; };
+          const tools = el('input', { value: r.allowedTools.join(', '), placeholder: 'allowed tools (empty = any), e.g. midjourney, kling', class: 'cm-tools' }); tools.oninput = () => { r.allowedTools = tools.value.split(',').map(x => S.toolId(x) || x.trim()).filter(Boolean); };
+          const addImg = async () => { const q = await promptModal('Add reference image', [{ key: 'drive', label: 'Google Drive link or file ID (optional)' }, { key: 'path', label: 'Path inside the project folder', placeholder: 'e.g. refs/saisha/front.jpg' }], 'Add'); if (q) { const id = S.parseDriveId(q.drive.trim()); const pth = normPath(q.path.trim()); if (id || pth) r.images.push(S.normMedia({ driveId: id || '', path: pth })); } modal(box, { wide: true }); draw(); };
+          detail.append(el('div', { class: 'refset', dataset: { id: r.id } },
+            el('div', { class: 'row' }, txt(r, 'label', 'Ref set name', 'cm-rslabel'), el('label', { class: 'chk' }, pub, 'public-safe only'), el('button', { class: 'danger', onclick: () => { c.refSets.splice(ri, 1); draw(); } }, '✕')),
+            tools, imgs,
+            el('div', { class: 'btns' }, el('button', { class: 'cm-addimg', onclick: addImg }, '+ image link / path'),
+              hasFolder() ? el('button', { onclick: () => pickFromFolder(null, 'image', (rel) => { r.images.push(mref(rel, rel.split('/').pop())); modal(box, { wide: true }); draw(); }) }, '+ from folder') : null),
+            used(c.id, { refSetId: r.id })));
+        });
+        detail.append(el('button', { class: 'cm-addrs', onclick: () => { let id = 'refs' + (c.refSets.length + 1); while (c.refSets.find(x => x.id === id)) id += 'b'; c.refSets.push({ id, label: 'Refs ' + (c.refSets.length + 1), images: [], allowedTools: [], publicOnly: false, notes: '' }); draw(); } }, '+ reference set'), el('h3', null, 'Looks'));
+        const def = el('select', { class: 'cm-default' }, el('option', { value: '' }, '(first look)'), c.looks.map(l => el('option', { value: l.id }, l.label))); def.value = c.defaultLookId; def.onchange = () => { c.defaultLookId = def.value; };
+        if (c.looks.length) detail.append(el('div', { class: 'row' }, el('span', null, 'Default look'), def));
+        c.looks.forEach((l, li) => {
+          const rs = el('select', null, el('option', { value: '' }, '(no ref set)'), c.refSets.map(r => el('option', { value: r.id }, r.label))); rs.value = l.refSetId; rs.onchange = () => { l.refSetId = rs.value; };
+          const warn = el('div', { class: 'ed-warn', hidden: true });
+          const chk = () => { const w = S.canonConflicts(c.canon, S.LOOK_FIELDS.map(k => l[k]).join('. ')); warn.hidden = !w.length; warn.textContent = '⚠ Contradicts canon: ' + w.join(' · '); };
+          const fl = S.LOOK_FIELDS.map(k => { const x = txt(l, k, k, 'cm-l-' + k, k === 'notes'); x.addEventListener('input', chk); return el('div', { class: 'fld' }, el('label', null, k), x); });
+          detail.append(el('div', { class: 'look', dataset: { id: l.id } }, el('div', { class: 'row' }, txt(l, 'label', 'Look name', 'cm-llabel'), rs, el('button', { class: 'danger', onclick: () => { c.looks.splice(li, 1); draw(); } }, '✕')), el('div', { class: 'grid2' }, fl), warn, used(c.id, { lookId: l.id })));
+          chk();
+        });
+        detail.append(el('button', { class: 'cm-addlook', onclick: () => { let id = 'look' + (c.looks.length + 1); while (c.looks.find(x => x.id === id)) id += 'b'; c.looks.push({ id, label: 'Look ' + (c.looks.length + 1), age: '', hair: '', outfit: '', makeup: '', props: '', refSetId: c.refSets[0] ? c.refSets[0].id : '', notes: '' }); draw(); } }, '+ look'));
+      } else detail.append(el('p', { class: 'muted' }, 'Add a character to start.'));
+      box.append(el('h2', null, '👥 Cast'), el('div', { class: 'cm-wrap' }, list, detail),
+        el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), el('button', { class: 'primary cm-save', onclick: () => {
+          mutate(d => { d.characters = work.filter(x => x.name.trim()).map((x, i) => { const n = S.normCharacter(x, i); if (!x.id || /^char\d+$/.test(x.id)) { let id = S.slug(x.name) || x.id; if (d.characters.find(o => o.id === id) && id !== x.id) id = x.id; n.id = id; } return n; }); });
+          closeModal(); toast('Cast saved');
+        } }, 'Save cast')));
+    };
+    draw(); modal(box, { wide: true });
+  }
+  function exportEdit(kind) {
+    const base = S.slug(doc.title);
+    if (kind === 'csv') downloadBlob(S.toCSV(doc), 'text/csv', base + '-edit.csv');
+    else if (kind === 'edl') downloadBlob(S.toCMX3600(doc), 'text/plain', base + '.edl');
+    else downloadBlob(S.toEDLText(doc), 'text/plain', base + '-edit-list.txt');
+  }
   function charPicker(p) {
     const box = el('div', { class: 'charpick' });
     doc.characters.forEach(c => {
-      const cb = el('input', { type: 'checkbox' }); cb.checked = p.characters.includes(c.id);
-      cb.addEventListener('change', () => { mutate(() => { const x = findPage(p.id).page; x.characters = cb.checked ? [...new Set([...x.characters, c.id])] : x.characters.filter(i => i !== c.id); }, null, { render: false }); updateCard(p.id); });
+      const cb = el('input', { type: 'checkbox' }); cb.checked = p.characters.some(r => r.charId === c.id);
+      cb.addEventListener('change', () => { mutate(() => { const x = findPage(p.id).page; x.characters = cb.checked ? (x.characters.some(r => r.charId === c.id) ? x.characters : x.characters.concat([{ charId: c.id, lookId: '', overrides: {} }])) : x.characters.filter(r => r.charId !== c.id); }); });
       box.append(el('label', { style: { borderColor: c.color } }, cb, c.name));
     });
     box.append(el('button', { style: { fontSize: '12px', padding: '2px 8px' }, onclick: addCharacterPrompt }, '+ character'));
@@ -420,19 +802,22 @@
   async function addCharacterPrompt() {
     const r = await promptModal('Add character', [{ key: 'name', label: 'Name', placeholder: 'e.g. Saisha' }]);
     if (!r || !r.name.trim()) return;
-    mutate(d => { const id = S.slug(r.name); if (!d.characters.find(c => c.id === id)) d.characters.push({ id, name: r.name.trim(), color: S.SCENE_COLORS[d.characters.length % S.SCENE_COLORS.length] }); });
+    mutate(d => { const id = S.slug(r.name); if (!d.characters.find(c => c.id === id)) d.characters.push(S.normCharacter({ id, name: r.name.trim(), color: S.SCENE_COLORS[d.characters.length % S.SCENE_COLORS.length] }, d.characters.length)); });
   }
   function commentsBox(p) {
     const list = el('div', { class: 'comments' });
-    p.comments.forEach(c => {
+    let replyTo = '';
+    const ta = el('textarea', { rows: 2, placeholder: 'Comment for Mirrage / Lucas…', class: 'cm-new' });
+    const replyNote = el('div', { class: 'muted cm-replying', style: { fontSize: '11.5px' }, hidden: true });
+    for (const { c, depth } of S.commentThreads(p.comments)) {
       const done = el('input', { type: 'checkbox', title: 'Resolved' }); done.checked = c.done;
       done.addEventListener('change', () => mutate(() => { findPage(p.id).page.comments.find(x => x.id === c.id).done = done.checked; }));
-      list.append(el('div', { class: 'cm' + (c.done ? ' done' : '') }, done, ' ', el('b', null, c.by || '?'), el('span', { class: 'when' }, (c.at || '').slice(0, 16).replace('T', ' ')),
+      const rb = el('button', { class: 'rbtn cm-reply', title: 'Reply to this comment', onclick: () => { replyTo = c.id; replyNote.hidden = false; replyNote.textContent = '↳ replying to ' + (c.by || '?') + ' · '; replyNote.append(el('a', { href: '#', onclick: (e) => { e.preventDefault(); replyTo = ''; replyNote.hidden = true; } }, 'cancel')); ta.focus(); } }, '↩ Reply');
+      list.append(el('div', { class: 'cm' + (c.done ? ' done' : '') + (depth ? ' reply' : ''), dataset: { id: c.id }, style: depth ? { marginLeft: Math.min(depth, 4) * 18 + 'px' } : null }, done, ' ', el('b', null, c.by || '?'), el('span', { class: 'when' }, S.fmtStamp(c.at)), rb,
         el('div', { style: { whiteSpace: 'pre-wrap' } }, c.text)));
-    });
-    const ta = el('textarea', { rows: 2, placeholder: 'Comment for Mirrage / Lucas…', class: 'cm-new' });
-    const add = el('button', { class: 'cm-add', onclick: () => { if (!ta.value.trim()) return; mutate(() => { findPage(p.id).page.comments.push({ id: S.uid('c'), by: prefs.name || 'Lucas', at: new Date().toISOString(), text: ta.value.trim(), done: false }); }); } }, 'Add comment');
-    return el('div', { class: 'fld' }, el('label', null, 'Comments (' + p.comments.filter(c => !c.done).length + ' open)'), list, ta, el('div', { style: { marginTop: '4px' } }, add));
+    }
+    const add = el('button', { class: 'cm-add', onclick: () => { if (!ta.value.trim()) return; const c = { id: S.uid('c'), by: prefs.name || 'Lucas', at: S.isoLocal(new Date()), text: ta.value.trim(), done: false }; if (replyTo) c.replyTo = replyTo; mutate(() => { findPage(p.id).page.comments.push(c); }); } }, 'Add comment');
+    return el('div', { class: 'fld' }, el('label', null, 'Comments (' + p.comments.filter(c => !c.done).length + ' open)'), list, replyNote, ta, el('div', { style: { marginTop: '4px' } }, add));
   }
   function mediaSlot(p, type) {
     const m = p[type];
@@ -455,7 +840,8 @@
       m && m.driveId ? el('a', { href: driveView(m.driveId), target: '_blank', rel: 'noopener' }, el('button', { type: 'button' }, '↗ Drive')) : null,
       type === 'video' && m && m.driveId && !localEntry(m.path) ? el('button', { title: 'Try the Drive player (needs Google sign-in; may not work in every browser)', onclick: () => { prev.innerHTML = ''; prev.append(el('iframe', { src: drivePreview(m.driveId), allow: 'autoplay; fullscreen', allowfullscreen: true })); } }, '▶ Drive player') : null,
       m ? el('button', { class: 'danger m-clear', title: 'Remove', onclick: () => mutate(() => { findPage(p.id).page[type] = null; }) }, '✕') : null);
-    const slot = el('div', { class: 'slot slot-' + type }, el('div', { class: 'slot-title' }, type === 'image' ? '🖼 Image' : '🎞 Video / animated'), prev, el('div', { class: 'src' }, mediaLabel(m)), btns);
+    const slot = el('div', { class: 'slot slot-' + type }, el('div', { class: 'slot-title' }, type === 'image' ? '🖼 Image' : '🎞 Video / animated'), prev, el('div', { class: 'src' }, mediaLabel(m)), driftLine(m),
+      type === 'video' && m ? inOutRow(p.id, (pg) => pg.video, () => prev.querySelector('video'), 'v') : null, btns);
     addMediaDrop(slot, p.id, type);
     return slot;
   }
@@ -519,6 +905,7 @@
   }
 
   // ---------- media replacement ----------
+  const mref = (path, name) => { const r = { driveId: '', path, url: '', name }; const v = S.versionLabel(name); if (v) r.version = v; return r; };
   const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
   function addMediaDrop(node, pageId, type) {
     node.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.stopPropagation(); node.classList.add('dragover'); });
@@ -538,8 +925,7 @@
       if (!m) continue;
       mutate(() => {
         const pg = findPage(pageId).page; pg[t] = m;
-        if (t === 'image' && pg.status === 'idea') pg.status = 'image';
-        if (t === 'video' && (pg.status === 'idea' || pg.status === 'image')) pg.status = 'animated';
+        bumpStatus(pg, t);
       });
       if (!m.url || !m.url.startsWith('data:')) toast((t === 'image' ? 'Image' : 'Video') + ' set: ' + (m.path || m.name));
     }
@@ -551,7 +937,7 @@
       for (const e of local.files.values()) {
         if (e.name === name && !e.path.startsWith('session:')) {
           const f = e.file || await e.handle.getFile().catch(() => null);
-          if (f && f.size === file.size) return { driveId: '', path: relFromBase(e.path), url: '', name };
+          if (f && f.size === file.size) return mref(relFromBase(e.path), name);
         }
       }
     }
@@ -566,7 +952,7 @@
         const full = joinPath(local.base, 'media/' + fname);
         const entry = { path: full, name: fname, handle: fh, type };
         local.files.set(full, entry); local.lower.set(full.toLowerCase(), entry);
-        return { driveId: '', path: 'media/' + fname, url: '', name: fname };
+        return mref('media/' + fname, fname);
       } catch (e) { console.warn(e); toast('Could not copy into the folder: ' + e.message); }
     }
     if (type === 'image') {
@@ -580,7 +966,7 @@
     local.files.set(full, entry); local.lower.set(full.toLowerCase(), entry);
     if (!local.kind) local.kind = 'session';
     toast('Video linked by file name "' + name + '". Put it in the project folder so it plays next time.', 5000);
-    return { driveId: '', path: name, url: '', name };
+    return mref(name, name);
   }
   function downscale(file, max, q) {
     return new Promise((res, rej) => {
@@ -603,12 +989,15 @@
     const m = findPage(pageId).page[type] || {};
     const r = await promptModal((type === 'image' ? 'Image' : 'Video') + ' link', [
       { key: 'drive', label: 'Google Drive link or file ID', value: m.driveId || (m.url && !m.url.startsWith('data:') ? m.url : ''), placeholder: 'https://drive.google.com/file/d/…/view', help: 'In Drive: right-click the file → Share → Copy link. Used for thumbnails online.' },
-      { key: 'path', label: 'Path inside the project folder', value: m.path || '', placeholder: 'e.g. bp-sb2-clips/SB2_03_v2.mp4', help: 'Relative to the folder that holds the storyboard file. Used when the folder is opened on your computer.' }
+      { key: 'path', label: 'Path inside the project folder', value: m.path || '', placeholder: 'e.g. bp-sb2-clips/SB2_03_v2.mp4', help: 'Relative to the folder that holds the storyboard file. Used when the folder is opened on your computer.' },
+      { key: 'version', label: 'Version label (optional)', value: m.version || '', placeholder: 'e.g. v2 (filled from _v2 in the name)' }
     ], 'Set');
     if (!r) return;
     const raw = r.drive.trim(); const id = S.parseDriveId(raw); const isUrl = !id && /^https?:/.test(raw);
     if (raw && !id && !isUrl) return toast('That does not look like a Drive link or ID');
-    const nm = S.normMedia({ driveId: id || '', path: normPath(r.path.trim()), url: isUrl ? raw : '' });
+    const path = normPath(r.path.trim()); const same = path === (m.path || '') && (id || '') === (m.driveId || '');
+    const keep = same ? { in: m.in, out: m.out, md5: m.md5, modifiedTime: m.modifiedTime, name: m.name } : {};
+    const nm = S.normMedia(Object.assign(keep, { driveId: id || '', path, url: isUrl ? raw : '', version: r.version.trim() || S.versionLabel(path) || '' }));
     mutate(() => { findPage(pageId).page[type] = nm; });
   }
   function pickFromFolder(pageId, type, onPick) {
@@ -626,7 +1015,7 @@
         grid.append(el('div', { class: 'it', title: e.path, onclick: () => {
           closeModal(); const rel = relFromBase(e.path);
           if (onPick) return onPick(rel);
-          mutate(() => { const pg = findPage(pageId).page; pg[type] = { driveId: '', path: rel, url: '', name: e.name }; if (type === 'image' && pg.status === 'idea') pg.status = 'image'; if (type === 'video' && /idea|image/.test(pg.status)) pg.status = 'animated'; });
+          mutate(() => { const pg = findPage(pageId).page; pg[type] = mref(rel, e.name); bumpStatus(pg, type); });
         } }, t, el('div', { class: 'n' }, relFromBase(e.path))));
       });
     };
@@ -646,7 +1035,7 @@
   function resetLocal() {
     for (const p of urlCache.values()) p.then(u => URL.revokeObjectURL(u)).catch(() => {});
     urlCache.clear();
-    Object.assign(local, { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonName: '', single: false });
+    Object.assign(local, { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false });
     remoteBase = null;
   }
   async function walk(dir, prefix, depth, out) {
@@ -722,9 +1111,9 @@
   }
   async function loadJsonEntry(e) {
     const f = e.file || await e.handle.getFile();
-    const d = safeJson(await f.text());
+    const txt = await f.text(); const d = safeJson(txt);
     if (!d) { await ask('Could not read ' + esc(e.path), 'The file is not valid JSON. If Mirrage just edited it, ask Mirrage to check the file. Nothing was changed.', [{ label: 'OK', value: 1 }]); return false; }
-    local.jsonPath = e.path; local.jsonName = e.name; local.jsonHandle = e.handle || null; local.jsonMtime = f.lastModified;
+    local.jsonPath = e.path; local.jsonName = e.name; local.jsonHandle = e.handle || null; local.jsonMtime = f.lastModified; local.jsonRev = revOf(d); local.jsonText = txt;
     local.base = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
     setDoc(d);
     const missing = allPages().reduce((a, p) => a + [p.image, p.video].filter(m => m && m.path && !localEntry(m.path)).length, 0);
@@ -736,8 +1125,8 @@
     if (window.showOpenFilePicker) {
       try {
         const [h] = await window.showOpenFilePicker({ id: 'storyboard', types: [{ description: 'Storyboard', accept: { 'application/json': ['.json'] } }] });
-        const f = await h.getFile(); const d = safeJson(await f.text()); if (!d) return toast('Not valid JSON');
-        resetLocal(); local.jsonHandle = h; local.jsonName = f.name; local.jsonMtime = f.lastModified; local.single = true;
+        const f = await h.getFile(); const txt = await f.text(); const d = safeJson(txt); if (!d) return toast('Not valid JSON');
+        resetLocal(); local.jsonHandle = h; local.jsonName = f.name; local.jsonMtime = f.lastModified; local.jsonRev = revOf(d); local.jsonText = txt; local.single = true;
         setDoc(d); toast('Opened ' + f.name + '. Open the whole folder to see local images and videos.', 4000);
       } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
       return;
@@ -757,7 +1146,9 @@
   function confirmDiscard() {
     return ask('Unsaved changes', 'You have unsaved changes in this storyboard. Discard them?', [{ label: 'Keep editing', value: false }, { label: 'Discard', value: true, cls: 'danger' }]);
   }
-  function stamp() { doc.updated = new Date().toISOString(); doc.updatedBy = (prefs.name || 'Lucas') + ' (app)'; }
+  const revOf = (d) => (d && Number.isInteger(d.revision) && d.revision > 0 ? d.revision : 0);
+  /** Every save bumps revision past both our copy and whatever is on disk; updated is local time with offset. */
+  function stamp(diskRev) { doc.revision = Math.max(revOf(doc), diskRev || 0, local.jsonRev || 0) + 1; doc.updated = S.isoLocal(new Date()); doc.updatedBy = (prefs.name || 'Lucas') + ' (app)'; }
   let saving = false;
   async function save({ auto, force } = {}) {
     if (!doc) return;
@@ -765,18 +1156,23 @@
     if (handle && (local.kind === 'fsa' || local.single)) {
       if (saving) return; saving = true;
       try {
-        const cur = await handle.getFile();
-        if (!force && local.jsonMtime && cur.lastModified !== local.jsonMtime) {
+        // Re-read before writing: a changed revision (or changed bytes) means someone else saved in between.
+        const cur = await handle.getFile(); const curTxt = await cur.text(); const disk = safeJson(curTxt); const diskRev = revOf(disk);
+        const revChanged = disk && local.jsonRev !== undefined && diskRev !== local.jsonRev;
+        const bytesChanged = local.jsonMtime && cur.lastModified !== local.jsonMtime && local.jsonText !== undefined && curTxt !== local.jsonText;
+        if (!force && (revChanged || bytesChanged)) {
           saving = false;
-          const r = await ask('The file changed on disk', 'Someone (for example Mirrage, through Drive) changed <b>' + esc(local.jsonName) + '</b> after you opened it.', [
+          const who = disk && disk.updatedBy ? ' by <b>' + esc(disk.updatedBy) + '</b>' : '';
+          const r = await ask('The file changed on disk', 'Someone (for example Mirrage, through Drive) changed <b>' + esc(local.jsonName) + '</b> after you opened it' + who + '.' + (revChanged ? '<br>Revision on disk: <b>' + diskRev + '</b> · yours was based on <b>' + local.jsonRev + '</b>.' : ''), [
             { label: 'Load their version', value: 'reload' }, { label: 'Save mine as a copy', value: 'copy' }, { label: 'Overwrite with mine', value: 'overwrite', cls: 'danger' }]);
           if (r === 'reload') return reloadFromDisk(true);
           if (r === 'copy') return saveCopy();
           return save({ force: true });
         }
-        stamp();
-        const w = await handle.createWritable(); await w.write(S.serialize(doc)); await w.close();
-        local.jsonMtime = (await handle.getFile()).lastModified; dirty = false; updateSaveState();
+        stamp(diskRev);
+        const out = S.serialize(doc);
+        const w = await handle.createWritable(); await w.write(out); await w.close();
+        local.jsonMtime = (await handle.getFile()).lastModified; local.jsonRev = doc.revision; local.jsonText = out; dirty = false; updateSaveState();
         if (!auto) toast('Saved to ' + (local.jsonPath || local.jsonName));
       } catch (e) {
         console.error(e); toast('Save failed: ' + e.message + '. Use ☰ → Download storyboard JSON.', 6000);
@@ -790,8 +1186,9 @@
     if (local.kind === 'fsa') {
       let dir = local.root; for (const part of local.base ? local.base.split('/') : []) dir = await dir.getDirectoryHandle(part);
       const fh = await dir.getFileHandle(name, { create: true }); stamp();
-      const w = await fh.createWritable(); await w.write(S.serialize(doc)); await w.close();
-      local.jsonHandle = fh; local.jsonName = name; local.jsonPath = joinPath(local.base, name); local.jsonMtime = (await fh.getFile()).lastModified;
+      const out = S.serialize(doc);
+      const w = await fh.createWritable(); await w.write(out); await w.close();
+      local.jsonHandle = fh; local.jsonName = name; local.jsonPath = joinPath(local.base, name); local.jsonMtime = (await fh.getFile()).lastModified; local.jsonRev = doc.revision; local.jsonText = out;
       dirty = false; render(); toast('Saved as ' + name);
     } else downloadJson(name);
   }
@@ -811,7 +1208,7 @@
       const e = local.files.get(local.jsonPath); if (e && await loadJsonEntry(e)) { if (sel && findPage(sel)) select(sel); }
       return;
     }
-    const f = await local.jsonHandle.getFile(); const d = safeJson(await f.text()); if (d) { local.jsonMtime = f.lastModified; setDoc(d); if (sel && findPage(sel)) select(sel); toast('Reloaded'); }
+    const f = await local.jsonHandle.getFile(); const txt = await f.text(); const d = safeJson(txt); if (d) { local.jsonMtime = f.lastModified; local.jsonRev = revOf(d); local.jsonText = txt; setDoc(d); if (sel && findPage(sel)) select(sel); toast('Reloaded'); }
   }
   // Watch for outside changes (Mirrage editing through Drive for desktop)
   async function checkExternal() {
@@ -819,12 +1216,14 @@
     try {
       const f = await local.jsonHandle.getFile();
       if (local.jsonMtime && f.lastModified !== local.jsonMtime) {
+        const txt = await f.text();
+        if (txt === local.jsonText) { local.jsonMtime = f.lastModified; return; } // touched, not changed
         if (!dirty) {
-          const d = safeJson(await f.text()); if (!d) return;
-          const sel = selected; undoStack.push(JSON.stringify(doc)); local.jsonMtime = f.lastModified;
+          const d = safeJson(txt); if (!d) return;
+          const sel = selected; undoStack.push(JSON.stringify(doc)); local.jsonMtime = f.lastModified; local.jsonRev = revOf(d); local.jsonText = txt;
           doc = S.normalizeDoc(d); selected = sel && findPage(sel) ? sel : null; render();
           toast('Updated from disk' + (d.updatedBy ? ' (by ' + d.updatedBy + ')' : ''));
-        } else $('#saveState').textContent = '⚠ Changed on disk';
+        } else { const d = safeJson(txt); $('#saveState').textContent = '⚠ Changed on disk' + (d && revOf(d) !== local.jsonRev ? ' (rev ' + revOf(d) + ')' : ''); }
       }
     } catch { /* file moved or permission gone */ }
   }
@@ -869,9 +1268,9 @@
         const { changes, extra } = plan(); closeModal();
         if (!changes.length && !extra.length) return toast('Nothing to link');
         mutate(() => {
-          for (const c of changes) { const p = findPage(c.id).page; p[c.t] = { driveId: '', path: c.rel, url: '', name: c.name }; if (c.t === 'image' && p.status === 'idea') p.status = 'image'; if (c.t === 'video' && /idea|image/.test(p.status)) p.status = 'animated'; }
+          for (const c of changes) { const p = findPage(c.id).page; p[c.t] = mref(c.rel, c.name); bumpStatus(p, c.t); }
           const last = doc.scenes[doc.scenes.length - 1];
-          for (const b of extra) last.pages.push(S.normPage({ image: { path: relFromBase(b.e.path), name: b.e.name }, status: 'image', code: S.pad2(b.num) }));
+          for (const b of extra) last.pages.push(S.normPage({ image: mref(relFromBase(b.e.path), b.e.name), status: 'image', code: S.pad2(b.num) }));
         });
         toast('Linked ' + changes.length + ' file(s)' + (extra.length ? ', added ' + extra.length + ' page(s)' : ''));
       } }, 'Apply'))));
@@ -904,7 +1303,7 @@
         if (r) { const img = el('img', { src: r.src }); waits.push(new Promise(ok => { img.onload = ok; img.onerror = () => { img.remove(); ok(); }; })); im.append(img); } else im.append(el('span', null, p.title || ''));
         g.append(el('div', { class: 'pr-card' }, im, el('div', { class: 'tx' },
           el('div', { class: 'h' }, n + (p.start ? ' · ' + [p.start, p.end].filter(Boolean).join('–') : '') + ' · ' + (Math.round(dur(p) * 10) / 10) + 's' + (p.camera ? ' · ' + p.camera : '')),
-          p.lyric ? el('div', { class: 'l' }, p.lyric) : null, p.description ? el('div', null, p.description) : null)));
+          lyr(p) ? el('div', { class: 'l' }, lyr(p)) : null, p.description ? el('div', null, p.description) : null)));
       }
       pr.append(g);
     }
@@ -922,18 +1321,9 @@
     const notes = el('textarea', { rows: 3 }); notes.value = doc.notes;
     const audioPath = el('input', { value: doc.audio ? doc.audio.path : '', placeholder: 'e.g. audio/Bleeding Page.mp3', class: 'set-audio' });
     const audioOff = el('input', { type: 'number', step: '0.1', value: doc.audioOffset || 0 });
-    const chars = el('div');
-    const charList = doc.characters.map(c => Object.assign({}, c));
-    const drawChars = () => {
-      chars.innerHTML = '';
-      charList.forEach((c, i) => {
-        const n = el('input', { value: c.name, style: { flex: 1 } }); n.oninput = () => { c.name = n.value; };
-        const col = el('input', { type: 'color', value: c.color, style: { width: '36px', padding: 0 } }); col.oninput = () => { c.color = col.value; };
-        chars.append(el('div', { class: 'row', style: { marginBottom: '4px' } }, col, n, el('button', { class: 'danger', onclick: () => { charList.splice(i, 1); drawChars(); } }, '✕')));
-      });
-      chars.append(el('button', { onclick: () => { charList.push({ id: '', name: '', color: S.SCENE_COLORS[charList.length % 8] }); drawChars(); } }, '+ character'));
-    };
-    drawChars();
+    const lyricsTa = el('textarea', { rows: 6, class: 'set-lyrics', placeholder: '0:37 First line of the song\n0:41 Next line…' });
+    lyricsTa.value = doc.songLyrics.map(l => S.fmtTime(l.t, true) + ' ' + l.text).join('\n');
+    const fps = el('input', { type: 'number', step: '0.001', value: doc.fps || '', placeholder: '24', class: 'set-fps' });
     const box = el('div', null, el('h2', null, '⚙ Project settings'),
       el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Title'), t), el('div', { class: 'fld' }, el('label', null, 'Project / album'), pj)),
       el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Aspect ratio'), asp), el('div', { class: 'fld' }, el('label', null, 'Default page duration (s)'), dd)),
@@ -941,7 +1331,9 @@
       el('div', { class: 'row' }, el('div', { class: 'fld', style: { flex: 3 } }, el('label', null, 'Song audio (path in the project folder), plays in ▶ Play'), audioPath,
         hasFolder() ? el('button', { style: { marginTop: '4px', fontSize: '12px' }, onclick: () => { pickFromFolder(null, 'audio', (rel) => { audioPath.value = rel; modal(box); }); } }, 'Pick from folder…') : null),
         el('div', { class: 'fld' }, el('label', null, 'Song time at page 1 (s)'), audioOff)),
-      el('div', { class: 'fld' }, el('label', null, 'Characters'), chars),
+      el('div', { class: 'fld' }, el('label', null, 'Characters'), el('button', { class: 'set-cast', onclick: () => { closeModal(); castManager(); } }, '👥 Open the cast manager (' + doc.characters.length + ')')),
+      el('div', { class: 'fld' }, el('label', null, 'Song lyrics with times (one line each: m:ss text) — fills page lyrics that are empty'), lyricsTa),
+      el('div', { class: 'fld' }, el('label', null, 'Frame rate for EDL export'), fps),
       el('div', { class: 'fld' }, el('label', null, 'Storyboard notes'), notes),
       el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Your name (comments and "updatedBy")'), nm), el('div', { class: 'fld' }, el('label', null, 'Autosave to the file'), el('label', { class: 'chk' }, au, 'save automatically while editing'))),
       el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), el('button', { class: 'primary set-save', onclick: () => {
@@ -951,7 +1343,8 @@
           d.driveFolderId = S.parseDriveId(fid.value) || fid.value.trim(); d.notes = notes.value;
           const ap = normPath(audioPath.value.trim());
           d.audio = ap ? Object.assign({}, d.audio && d.audio.path === ap ? d.audio : { driveId: '' }, { path: ap, url: '', name: ap.split('/').pop() }) : null; d.audioOffset = parseFloat(audioOff.value) || 0;
-          d.characters = charList.filter(c => c.name.trim()).map(c => ({ id: c.id || S.slug(c.name), name: c.name.trim(), color: c.color }));
+          d.songLyrics = lyricsTa.value.split('\n').map(l => { const m = l.trim().match(/^\[?(\d+:\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)\]?\s+(.+)$/); return m ? { t: S.parseTime(m[1]), text: m[2].trim() } : null; }).filter(l => l && l.t !== null).sort((x, y) => x.t - y.t);
+          d.fps = parseFloat(fps.value) > 0 ? parseFloat(fps.value) : null;
         });
         closeModal();
       } }, 'Save')));
@@ -966,6 +1359,11 @@
 <li><b>▶ Play</b> runs the animatic: pages in order with their durations; local clips play inline; the song plays if you set it in ⚙ settings.</li>
 <li><b>Open project folder</b> (Chrome or Edge): pick the folder on your Mac (Google Drive for desktop, or a downloaded copy). Changes save straight into the file, and when Mirrage changes it the board updates by itself.</li>
 <li><b>Safari / iPhone:</b> folders open read-only, so Save downloads the file.</li>
+<li><b>Double-click a page</b> for the breakout drawer: Page · Prompts (image/video/negative + tool + copy) · Cast (looks, canon, prompt block) · Takes (compare, pick) · Log.</li>
+<li><b>Speed</b> 0.4 = slow motion, negative = reverse; <b>source in/out</b> trims the clip; <b>cuts</b> make flicker bursts. ▶ Play previews them.</li>
+<li><b>Role</b> (insert / flash-forward / flashback) is shown on cards; ⚠ in the header lists song-time gaps between linear pages; ⏱ means the video prompt length differs from the page.</li>
+<li><b>☰ Cast manager</b>: characters, locked canon, reference sets and looks. <b>☰ Export</b> CSV / EDL for DaVinci Resolve.</li>
+<li>Every save raises <code>revision</code>; if the file changed since you opened it, you are asked before anything is overwritten.</li>
 <li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser. Videos show a still and an ↗ Drive link.</li>
 </ul>
 <p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>P</code> play · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
@@ -973,7 +1371,8 @@
   }
 
   // ---------- player (animatic) ----------
-  const pl = { seq: [], i: 0, t0: 0, elapsed: 0, playing: false, raf: 0, total: 0, starts: [], token: 0 };
+  // Each page becomes a list of segments: its cuts (looped to fill the page) or one segment with the page video/image.
+  const pl = { seq: [], i: 0, t0: 0, elapsed: 0, playing: false, raf: 0, total: 0, starts: [], token: 0, segs: [], seg: -1, lastSeek: 0 };
   async function play(fromId) {
     if (!doc) return;
     pl.seq = allPages().filter(p => p.status !== 'cut');
@@ -990,28 +1389,90 @@
     pl.elapsed = 0; await showStep(pl.i, 0); resume();
   }
   function songOn() { return !!$('#plAudio').getAttribute('src') && $('#plSong').checked; }
+  async function buildSegments(p) {
+    const d = dur(p); const pageSpeed = S.speedOf(p);
+    const raw = p.cuts && p.cuts.length
+      ? p.cuts.map(c => ({ media: c.media, dur: c.duration || d / p.cuts.length, speed: c.speed || pageSpeed, isCut: true }))
+      : [{ media: p.video || p.image, dur: d, speed: pageSpeed, isCut: false }];
+    const segs = [];
+    for (const sg of raw) {
+      let r = await resolveMedia(sg.media).catch(() => null);
+      let kind = 'blank';
+      if (r && r.playable && VID_EXT.test(sg.media.path || sg.media.name || sg.media.url || '')) kind = 'video';
+      else if (r && r.playable && sg.media === p.video) kind = 'video';
+      else if (r && r.playable) kind = 'image';
+      if (!sg.isCut && kind !== 'video') { // page without playable clip: fall back to image, then Drive poster
+        const ir = await resolveMedia(p.image).catch(() => null);
+        if (ir) { r = ir; kind = 'image'; } else if (r && r.kind === 'drive') kind = 'image';
+      } else if (r && r.kind === 'drive') kind = 'image';
+      segs.push(Object.assign({}, sg, { r, kind }));
+    }
+    return segs;
+  }
   async function showStep(i, offset) {
-    pl.i = i; pl.elapsed = offset || 0;
-    const p = pl.seq[i]; const img = $('#plImg'), vid = $('#plVid'), blank = $('#plBlank');
+    pl.i = i; pl.elapsed = offset || 0; pl.seg = -1;
+    const p = pl.seq[i];
+    const sp = S.speedOf(p);
+    const fx = [p.role && p.role !== 'linear' ? S.ROLES.find(r => r.id === p.role).label : '', sp !== 1 ? (sp < 0 ? '◀◀ reverse ' + Math.abs(sp) + '× (simulated)' : Math.round(sp * 100) + '% speed') : '', p.retime ? S.RETIMES.find(r => r.id === p.retime).label + ' (not simulated)' : '', p.effect ? 'effect: ' + p.effect : '', p.cuts.length ? p.cuts.length + ' cuts' : ''].filter(Boolean).join(' · ');
     $('#plInfo').textContent = 'Page ' + pageNumber(p.id) + ' / ' + allPages().length + (p.title ? ' · ' + p.title : '') + (p.start ? ' · ' + p.start : '');
-    $('#plCaption').textContent = $('#plCaptions').checked ? p.lyric : '';
+    $('#plFx').textContent = fx; $('#plFx').hidden = !fx;
+    $('#plCaption').textContent = $('#plCaptions').checked ? lyr(p) : '';
+    const stage = $('#player .stage');
+    stage.classList.toggle('fx-flicker', /flicker/i.test(p.effect)); stage.classList.toggle('fx-strobe', /strobe/i.test(p.effect));
     const token = pl.token = Math.random();
-    const vr = await resolveMedia(p.video).catch(() => null);
-    const ir = vr && vr.playable ? null : (await resolveMedia(p.image).catch(() => null) || (vr && vr.kind === 'drive' ? vr : null));
+    const segs = await buildSegments(p);
     if (token !== pl.token) return;
-    img.hidden = true; vid.hidden = true; blank.textContent = ''; vid.pause();
-    if (vr && vr.playable) {
-      if (vid.getAttribute('src') !== vr.src) vid.src = vr.src;
-      vid.muted = songOn(); vid.hidden = false;
-      try { vid.currentTime = offset || 0; } catch { }
-      if (pl.playing) vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); });
-    } else if (ir) {
-      img.classList.remove('kb'); void img.offsetWidth; img.style.setProperty('--kbdur', dur(p) + 's');
-      img.onerror = () => { img.hidden = true; blank.textContent = p.description || p.lyric || ''; };
-      img.src = ir.kind === 'drive' ? driveThumb((p.image && p.image.driveId) || p.video.driveId, 1920) : ir.src;
-      img.hidden = false; img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
-    } else blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)');
+    pl.segs = segs;
+    renderSegment(true);
     syncAudio(true);
+  }
+  /** Which segment is on screen at the current page time, and how far into it. */
+  function segAt(t) {
+    const total = pl.segs.reduce((a, s) => a + s.dur, 0) || 1;
+    let x = pl.segs.length > 1 ? t % total : t; let k = 0;
+    while (k < pl.segs.length - 1 && x >= pl.segs[k].dur) { x -= pl.segs[k].dur; k++; }
+    return { k, x };
+  }
+  function videoTimeFor(sg, x, v) {
+    const m = sg.media || {}; const full = isFinite(v.duration) ? v.duration : Infinity;
+    const a = m.in !== undefined ? m.in : 0; const b = m.out !== undefined ? Math.min(m.out, full) : full;
+    if (sg.speed < 0) return Math.max(a, (isFinite(b) ? b : a + sg.dur * Math.abs(sg.speed)) - x * Math.abs(sg.speed));
+    return Math.min(isFinite(b) ? b : Infinity, a + x * sg.speed);
+  }
+  function renderSegment(force) {
+    if (!pl.segs.length) return;
+    const p = pl.seq[pl.i]; const { k, x } = segAt(pl.elapsed); const sg = pl.segs[k];
+    const img = $('#plImg'), vid = $('#plVid'), blank = $('#plBlank');
+    if (force || k !== pl.seg) {
+      pl.seg = k;
+      img.hidden = true; vid.hidden = true; blank.textContent = ''; vid.pause();
+      if (sg.kind === 'video') {
+        if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
+        vid.muted = songOn() || !pl.playing; vid.hidden = false;
+        const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed)));
+        vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
+        const seek = () => { try { vid.currentTime = videoTimeFor(sg, x, vid); } catch { } if (pl.playing && sg.speed > 0) vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); }); };
+        if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
+      } else if (sg.kind === 'image') {
+        img.classList.remove('kb'); void img.offsetWidth; img.style.setProperty('--kbdur', sg.dur + 's');
+        img.onerror = () => { img.hidden = true; blank.textContent = p.description || p.lyrics || ''; };
+        img.src = sg.r.kind === 'drive' ? driveThumb(sg.media.driveId || (p.image && p.image.driveId) || (p.video && p.video.driveId), 1920) : sg.r.src;
+        img.hidden = false; if (!sg.isCut) img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
+      } else blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)');
+      return;
+    }
+    if (sg.kind === 'video' && vid.readyState >= 1) {
+      const want = videoTimeFor(sg, x, vid);
+      if (sg.speed < 0) { // reverse: browsers cannot play backwards, so step the frame by seeking
+        if (!vid.paused) vid.pause();
+        if (!vid.seeking && performance.now() - pl.lastSeek > 40) { pl.lastSeek = performance.now(); try { vid.currentTime = want; } catch { } }
+      } else {
+        const m = sg.media || {};
+        if (m.out !== undefined && vid.currentTime >= m.out - 0.02) { if (!vid.paused) vid.pause(); } // hold the out frame
+        else if (Math.abs(vid.currentTime - want) > 0.3 && !vid.seeking) { try { vid.currentTime = want; } catch { } }
+        else if (vid.paused && pl.playing && !vid.ended) vid.play().catch(() => {});
+      }
+    }
   }
   function syncAudio(seek) {
     const a = $('#plAudio'); if (!a.getAttribute('src')) return;
@@ -1028,7 +1489,7 @@
     if (pl.elapsed >= dur(p)) {
       if (pl.i + 1 >= pl.seq.length) { pl.elapsed = dur(p); updateBar(); pause(); $('#plInfo').textContent += ' · end'; return; }
       pl.t0 = now; showStep(pl.i + 1, 0);
-    } else if (!$('#plSync').checked) syncAudio(false);
+    } else { renderSegment(false); if (!$('#plSync').checked) syncAudio(false); }
     updateBar(); pl.raf = requestAnimationFrame(tick);
   }
   function updateBar() {
@@ -1038,7 +1499,8 @@
   }
   function resume() {
     pl.playing = true; pl.t0 = performance.now() - pl.elapsed * 1000; $('#plToggle').textContent = '⏸';
-    const v = $('#plVid'); if (!v.hidden) { v.muted = songOn(); v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
+    const v = $('#plVid'); const sg = pl.segs[pl.seg];
+    if (!v.hidden && sg && sg.speed > 0) { v.muted = songOn(); v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
     $('#plImg').style.animationPlayState = 'running';
     syncAudio(true); cancelAnimationFrame(pl.raf); pl.raf = requestAnimationFrame(tick);
   }
@@ -1056,7 +1518,7 @@
   $('#plPrev').onclick = () => stepTo(pl.i - 1);
   $('#plNext').onclick = () => stepTo(pl.i + 1);
   $('#plClose').onclick = closePlayer;
-  $('#plCaptions').onchange = () => { $('#plCaption').textContent = $('#plCaptions').checked ? pl.seq[pl.i].lyric : ''; };
+  $('#plCaptions').onchange = () => { $('#plCaption').textContent = $('#plCaptions').checked ? lyr(pl.seq[pl.i]) : ''; };
   $('#plSong').onchange = () => { $('#plVid').muted = songOn(); syncAudio(true); };
   $('#plSync').onchange = () => syncAudio(true);
   $('#plProgress').addEventListener('click', (e) => {
@@ -1083,7 +1545,7 @@
   }
   const actions = {
     openFolder, openFile, sample: loadSample, new: newDoc, reload: () => reloadFromDisk(false), autolink: autoLinkDialog, importText: importTextDialog,
-    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
+    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), cast: () => doc && castManager(), exportCsv: () => doc && exportEdit('csv'), exportEdl: () => doc && exportEdit('edl'), exportEdlText: () => doc && exportEdit('txt'), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
   };
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]'); if (a) { $('#menu').hidden = true; if (actions[a.dataset.act]) actions[a.dataset.act](); return; }
@@ -1150,6 +1612,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput };
+  window.__sb = { get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
   init();
 })();

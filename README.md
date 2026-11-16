@@ -21,9 +21,25 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
   - When the folder is open, a dropped file is copied into a `media/` subfolder, and the page points to it.
 - **▶ Play:** an animatic with pages in order and their durations. Clips play inline when the folder is open, with lyrics as captions. If you set the song in ⚙ Project settings, it plays underneath. With **page timecodes** turned on, each page jumps to its own song time.
 - **Script view:** the whole storyboard reads as text, scene by scene.
-- **Status per page:** idea → image → animated → final, or cut (skipped in Play). Coloured dots show progress, the runtime updates as you edit, and you can filter by status or character.
-- **Comments and flags:** leave notes for Mirrage on a page; Mirrage can answer in the same place. A flag (e.g. "drink – Lucas to OK") shows in red.
-- **Auto-link** (☰ menu): matches numbered files such as `shot 03.jpg` or `SB2_03_v2.mp4` to pages; the highest _v number wins.
+- **Status per page:** idea → prompted → rendered → picked → in edit → final, or cut (skipped in Play). Old files load with `image` read as *rendered* and `animated` as *picked*. You can filter the board by status or character.
+- **Breakout drawer (v2):** double-click a page, or press ⤢ in the editor, to open a large panel with these tabs:
+  - **Page:** timing, role, speed, media, cuts, lyrics, camera, mood and comments.
+  - **Prompts:** image, video and negative prompts, each with a tool and a copy button.
+  - **Cast:** the looks used on this page, the locked canon, and copy prompt block.
+  - **Takes:** every render, with an A/B compare and Pick.
+  - **Log:** the generation log (tool, model, credits, who approved it).
+- **Speed and timing (v2):**
+  - **Speed:** set speed (0.4 = slow motion, negative = reverse), retime (a label for Resolve) and an effect (flicker and strobe are previewed).
+  - **Source in/out:** set the in and out points for a clip, using the **in = frame / out = frame** buttons on the editor video.
+  - **Cuts:** add a list of cuts for flicker bursts.
+  - **Play:** Play mode previews all of this.
+- **Song time checks (v2):** the role badge shows on cards (insert, flash-forward, flashback). The header shows the total screen time, the song span and any **song-time gaps** between linear pages. ⏱ warns when a video prompt says "6 s" but the page is shorter.
+- **Cast (v2, ☰ → Cast manager):** characters with locked canon, reference sets (allowed tools, public-safe only) and looks. Cards show each character's look thumbnail. In the drawer, double-click a character to open the look editor, then use **Save as new look** or **Override just here**. You're warned when an override contradicts canon (eye or hair colour, tattoo side, barefoot). Each look and reference set has a "Used in" list.
+- **Song lyrics (v2, ⚙ settings):** paste timed lines (`0:37 First line`). Pages without lyrics fill in automatically by their song time.
+- **For Resolve (v2, ☰):** export the edit list as CSV, a CMX3600 EDL or plain text (page, code, role, song in/out, clip, source in/out, speed, duration).
+- **Revision safety (v2):** every save raises `revision` by 1. Before writing, the app re-reads the file; if someone else saved in between, you choose what happens.
+- **Comments and flags:** leave notes for Mirrage on a page; replies show threaded (↩ Reply). A flag (e.g. "drink – Lucas to OK") shows in red.
+- **Auto-link** (☰ menu): matches numbered files such as `shot 03.jpg` or `SB2_03_v2.mp4` to pages; the highest _v number wins, and its version label (v2) is stored.
 - **Import Mirrage text** (☰): paste one of Mirrage's storyboard docs to turn it into pages. **Export Markdown** does the reverse.
 - **Print / PDF** (☰): 6 pages per A4 sheet.
 - **Undo / redo:** ⌘Z and ⇧⌘Z. Save is ⌘S, and autosave is on when a folder is open.
@@ -35,5 +51,7 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
 - **If you and Mirrage both change the file at the same moment,** the app asks: load Mirrage's version, save yours as a copy, or overwrite.
 - Your work also autosaves in the browser. If something goes wrong, the start screen offers **Restore browser copy**.
 - Hidden macOS `._` files from Drive are ignored.
+
+The file format, including the v2 rules for Mirrage, is in **SCHEMA.md**.
 
 Made by Plug-in Baby. Uses SortableJS (MIT). Everything else is plain HTML, CSS and JavaScript with no build step and no tracking.

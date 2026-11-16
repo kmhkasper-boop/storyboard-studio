@@ -1,19 +1,136 @@
 {
   "format": "storyboard-studio",
-  "version": 1,
+  "version": 2,
+  "revision": 1,
   "title": "Sample – Paper Moon",
   "project": "Storyboard Studio sample",
-  "updated": "2026-11-16T18:00:00.000Z",
+  "updated": "2026-11-16T20:45:00+01:00",
   "updatedBy": "Plug-in Baby",
   "aspect": "16:9",
   "defaultDuration": 4,
-  "audio": { "path": "audio/sample-song.mp3", "name": "sample-song.mp3" },
+  "audio": {
+    "path": "audio/sample-song.mp3",
+    "name": "sample-song.mp3"
+  },
+  "fps": 24,
   "characters": [
-    { "id": "saisha", "name": "Saisha", "color": "#ff6b9a" },
-    { "id": "steeve", "name": "Steeve", "color": "#6aa8ff" },
-    { "id": "mr-hat", "name": "Mr Hat", "color": "#ffb84d" }
+    {
+      "id": "saisha",
+      "name": "Saisha",
+      "color": "#ff6b9a",
+      "canon": "Light hazel eyes. Caramel hair with a short light fringe. Always barefoot. Wears linen.",
+      "refSets": [
+        {
+          "id": "saisha-main",
+          "label": "Saisha main refs",
+          "images": [
+            {
+              "path": "images/page-01.jpg"
+            },
+            {
+              "path": "images/page-07.jpg"
+            }
+          ],
+          "allowedTools": [
+            "midjourney",
+            "nanoBanana",
+            "kling"
+          ]
+        }
+      ],
+      "looks": [
+        {
+          "id": "linen-day",
+          "label": "Linen day",
+          "age": "early 20s",
+          "hair": "caramel, short light fringe, loose",
+          "outfit": "off-white linen dress",
+          "makeup": "none",
+          "refSetId": "saisha-main"
+        },
+        {
+          "id": "night-tram",
+          "label": "Night tram",
+          "hair": "caramel, short light fringe, damp from rain",
+          "outfit": "linen dress under an oversized linen coat",
+          "makeup": "smudged",
+          "refSetId": "saisha-main",
+          "notes": "still barefoot on the wet street"
+        }
+      ],
+      "defaultLookId": "linen-day"
+    },
+    {
+      "id": "steeve",
+      "name": "Steeve",
+      "color": "#6aa8ff",
+      "canon": "Ring-and-roots temple tattoo and neck glyph on his OWN RIGHT side only; left side bare.",
+      "refSets": [
+        {
+          "id": "steeve-main",
+          "label": "Steeve stage refs",
+          "images": [
+            {
+              "path": "images/page-04.jpg"
+            },
+            {
+              "path": "images/page-05.jpg"
+            }
+          ],
+          "allowedTools": [
+            "midjourney"
+          ],
+          "publicOnly": true
+        }
+      ],
+      "looks": [
+        {
+          "id": "stage",
+          "label": "Stage",
+          "outfit": "black shirt, rolled sleeves",
+          "props": "bass guitar",
+          "refSetId": "steeve-main"
+        }
+      ]
+    },
+    {
+      "id": "mr-hat",
+      "name": "Mr Hat",
+      "color": "#ffb84d",
+      "canon": "Tall black top hat; never takes it off."
+    }
   ],
-  "notes": "A made-up example so you can try everything: drag pages, swap images, press Play.",
+  "songLyrics": [
+    {
+      "t": 4,
+      "text": "Paper moon above the wire"
+    },
+    {
+      "t": 8,
+      "text": "Fold the sky and pull it higher"
+    },
+    {
+      "t": 12,
+      "text": "Every light is on for you"
+    },
+    {
+      "t": 16,
+      "text": "Waiting for the night tram"
+    },
+    {
+      "t": 24,
+      "text": "Walk it home"
+    },
+    {
+      "t": 26,
+      "text": "(walk it home)"
+    },
+    {
+      "t": 28,
+      "text": "And the moon goes back to paper"
+    }
+  ],
+  "notes": "A made-up example so you can try everything: drag pages, swap images, press Play. v2 sample: cast with canon, looks and ref sets, takes, a generation log, speed/retime, a flicker cut burst and song lyrics.",
   "scenes": [
     {
       "id": "s_intro",
@@ -21,10 +138,120 @@
       "color": "#ffb84d",
       "notes": "Warm, slow, hopeful.",
       "pages": [
-        { "id": "p_01", "start": "0:00", "end": "0:04", "status": "image", "title": "Dawn", "lyric": "(intro synths)", "description": "Wide shot of the city at dawn; a lone figure on the bridge.", "camera": "extreme wide, slow push-in", "characters": ["saisha"], "image": { "path": "images/page-01.jpg" } },
-        { "id": "p_02", "start": "0:04", "end": "0:08", "status": "image", "title": "Rooftop", "lyric": "Paper moon above the wire", "description": "Night rooftop, the moon looks like it is cut from paper.", "camera": "low angle", "image": { "path": "images/page-02.jpg" } },
-        { "id": "p_03", "start": "0:08", "end": "0:12", "status": "animated", "title": "Paper sky", "lyric": "Fold the sky and pull it higher", "description": "She reaches up and the sky folds like paper.", "camera": "medium, tilt up", "characters": ["saisha"], "image": { "path": "images/page-03.jpg" }, "video": { "path": "clips/clip-03_v2.mp4" },
-          "comments": [ { "id": "c_1", "by": "Mirrage", "at": "2026-11-16T17:40:00Z", "text": "Lucas, keep the fold or switch to a tear like in Bleeding Page?" } ] }
+        {
+          "id": "p_01",
+          "start": "0:00",
+          "end": "0:04",
+          "status": "rendered",
+          "title": "Dawn",
+          "description": "Wide shot of the city at dawn; a lone figure on the bridge.",
+          "camera": "extreme wide, slow push-in",
+          "characters": [
+            "saisha"
+          ],
+          "image": {
+            "path": "images/page-01.jpg"
+          },
+          "lyrics": "(intro synths)",
+          "mood": "quiet, hopeful"
+        },
+        {
+          "id": "p_02",
+          "start": "0:04",
+          "end": "0:08",
+          "status": "rendered",
+          "title": "Rooftop",
+          "description": "Night rooftop, the moon looks like it is cut from paper.",
+          "camera": "low angle",
+          "image": {
+            "path": "images/page-02.jpg"
+          },
+          "lyrics": "Paper moon above the wire"
+        },
+        {
+          "id": "p_03",
+          "start": "0:08",
+          "end": "0:12",
+          "status": "picked",
+          "title": "Paper sky",
+          "description": "She reaches up and the sky folds like paper.",
+          "camera": "medium, tilt up",
+          "characters": [
+            "saisha"
+          ],
+          "image": {
+            "path": "images/page-03.jpg"
+          },
+          "video": {
+            "path": "clips/clip-03_v2.mp4",
+            "in": 0.5,
+            "out": 3.5,
+            "version": "v2",
+            "md5": "5d41402abc4b2a76b9719d911017c592",
+            "modifiedTime": "2026-11-16T15:31:07Z"
+          },
+          "comments": [
+            {
+              "id": "c_1",
+              "by": "Mirrage",
+              "at": "2026-11-16T17:40:00Z",
+              "text": "Lucas, keep the fold or switch to a tear like in Bleeding Page?"
+            },
+            {
+              "id": "c_2",
+              "by": "Lucas",
+              "at": "2026-11-16T20:10:00+01:00",
+              "text": "Agreed, keep the slow-mo.",
+              "replyTo": "c_1"
+            }
+          ],
+          "lyrics": "Fold the sky and pull it higher",
+          "speed": 0.5,
+          "retime": "opticalFlow",
+          "imageTool": "midjourney",
+          "videoTool": "kling",
+          "mood": "wonder",
+          "imagePrompt": "Young woman with light hazel eyes and caramel hair reaching up; the night sky folds like paper above her, cinematic, 16:9",
+          "videoPrompt": "(4 s, image-to-video) She reaches up and the sky folds like paper; slow push-in.",
+          "negativePrompt": "shoes, extra fingers, text, watermark",
+          "negativeTool": "midjourney",
+          "takes": [
+            {
+              "path": "images/page-03.jpg",
+              "version": "v1",
+              "tool": "midjourney",
+              "note": "still frame"
+            },
+            {
+              "path": "clips/clip-03_v2.mp4",
+              "version": "v2",
+              "tool": "kling",
+              "note": "smoother fold",
+              "pick": true
+            }
+          ],
+          "genLog": [
+            {
+              "tool": "midjourney",
+              "model": "v7",
+              "resolution": "1456x816",
+              "credits": 1,
+              "approvedBy": "Lucas",
+              "approvedAt": "2026-11-16T14:02:00+01:00",
+              "quote": "yes, this sky"
+            },
+            {
+              "tool": "kling",
+              "model": "2.1 Master",
+              "resolution": "1080p",
+              "seconds": 4,
+              "credits": 35,
+              "approvedBy": "Lucas",
+              "approvedAt": "2026-11-16T15:30:00+01:00",
+              "quote": "v2 is the one"
+            }
+          ]
+        }
       ]
     },
     {
@@ -32,9 +259,112 @@
       "title": "Stage – the band",
       "color": "#6aa8ff",
       "pages": [
-        { "id": "p_04", "start": "0:12", "end": "0:16", "status": "image", "title": "Lights", "lyric": "Every light is on for you", "description": "Band on stage, beams cut through the haze. Mr Hat on the right.", "camera": "wide, handheld", "characters": ["steeve", "mr-hat"], "image": { "path": "images/page-04.jpg" }, "flag": "drink on stage – Lucas to OK" },
-        { "id": "p_05", "start": "0:16", "end": "0:20", "status": "animated", "title": "Tram stop", "lyric": "Waiting for the night tram", "description": "Two figures at the tram stop, one walks off.", "camera": "medium two-shot", "characters": ["saisha", "steeve"], "image": { "path": "images/page-05.jpg" }, "video": { "path": "clips/clip-05_v2.mp4" } },
-        { "id": "p_06", "start": "0:20", "end": "0:24", "status": "image", "title": "Moon", "lyric": "(instrumental)", "description": "The paper moon alone in a dark sky.", "camera": "locked-off", "image": { "path": "images/page-06.jpg" } }
+        {
+          "id": "p_04",
+          "start": "0:12",
+          "end": "0:16",
+          "status": "inEdit",
+          "title": "Lights",
+          "description": "Band on stage, beams cut through the haze. Mr Hat on the right.",
+          "camera": "wide, handheld",
+          "characters": [
+            {
+              "charId": "steeve",
+              "lookId": "stage"
+            },
+            "mr-hat"
+          ],
+          "image": {
+            "path": "images/page-04.jpg"
+          },
+          "flag": "drink on stage – Lucas to OK",
+          "lyrics": "Every light is on for you"
+        },
+        {
+          "id": "p_05",
+          "start": "0:16",
+          "end": "0:20",
+          "status": "picked",
+          "title": "Tram stop",
+          "description": "Two figures at the tram stop, one walks off.",
+          "camera": "medium two-shot",
+          "characters": [
+            {
+              "charId": "saisha",
+              "lookId": "night-tram",
+              "overrides": {
+                "props": "paper tram ticket"
+              }
+            },
+            "steeve"
+          ],
+          "image": {
+            "path": "images/page-05.jpg"
+          },
+          "video": {
+            "path": "clips/clip-05_v2.mp4"
+          },
+          "lyrics": "Waiting for the night tram",
+          "takes": [
+            {
+              "path": "clips/clip-05.mp4",
+              "version": "v1",
+              "tool": "wan"
+            },
+            {
+              "path": "clips/clip-05_v2.mp4",
+              "version": "v2",
+              "tool": "seedance",
+              "pick": true
+            }
+          ]
+        },
+        {
+          "id": "p_06",
+          "start": "0:20",
+          "end": "0:24",
+          "status": "rendered",
+          "title": "Moon",
+          "description": "The paper moon alone in a dark sky.",
+          "camera": "locked-off",
+          "image": {
+            "path": "images/page-06.jpg"
+          },
+          "lyrics": "(instrumental)",
+          "role": "insert",
+          "effect": "flicker",
+          "cuts": [
+            {
+              "media": {
+                "path": "clips/clip-05.mp4",
+                "in": 0,
+                "out": 0.5
+              },
+              "duration": 0.5
+            },
+            {
+              "media": {
+                "path": "images/page-06.jpg"
+              },
+              "duration": 0.25
+            },
+            {
+              "media": {
+                "path": "clips/clip-03_v2.mp4",
+                "in": 1,
+                "out": 2
+              },
+              "duration": 0.5,
+              "speed": -1
+            }
+          ]
+        }
+      ],
+      "characters": [
+        {
+          "charId": "saisha",
+          "lookId": "night-tram"
+        }
       ]
     },
     {
@@ -42,9 +372,52 @@
       "title": "Ending – sunrise",
       "color": "#4fd18b",
       "pages": [
-        { "id": "p_07", "start": "0:24", "end": "0:28", "status": "image", "title": "Road", "lyric": "Walk it home", "description": "Desert road leading to the horizon.", "camera": "wide, centered", "characters": ["saisha"], "image": { "path": "images/page-07.jpg" } },
-        { "id": "p_08", "start": "0:28", "end": "0:32", "status": "final", "title": "Sunrise", "lyric": "And the moon goes back to paper", "description": "Everyone together on the skyline as the sun comes up.", "camera": "wide, slow crane up", "characters": ["saisha", "steeve", "mr-hat"], "image": { "path": "images/page-08.jpg" } },
-        { "id": "p_09", "start": "0:32", "end": "0:36", "status": "idea", "title": "Post-credits", "description": "Mr Hat picks up the paper moon from the ground and pockets it.", "notes": "Idea only, no image yet.", "characters": ["mr-hat"] }
+        {
+          "id": "p_07",
+          "start": "0:24",
+          "end": "0:28",
+          "status": "rendered",
+          "title": "Road",
+          "description": "Desert road leading to the horizon.",
+          "camera": "wide, centered",
+          "characters": [
+            "saisha"
+          ],
+          "image": {
+            "path": "images/page-07.jpg"
+          }
+        },
+        {
+          "id": "p_08",
+          "start": "0:28",
+          "end": "0:32",
+          "status": "final",
+          "title": "Sunrise",
+          "description": "Everyone together on the skyline as the sun comes up.",
+          "camera": "wide, slow crane up",
+          "characters": [
+            "saisha",
+            "steeve",
+            "mr-hat"
+          ],
+          "image": {
+            "path": "images/page-08.jpg"
+          },
+          "lyrics": "And the moon goes back to paper",
+          "effect": "strobe"
+        },
+        {
+          "id": "p_09",
+          "start": "0:32",
+          "end": "0:36",
+          "status": "idea",
+          "title": "Post-credits",
+          "description": "Mr Hat picks up the paper moon from the ground and pockets it.",
+          "notes": "Idea only, no image yet.",
+          "characters": [
+            "mr-hat"
+          ]
+        }
       ]
     }
   ]
