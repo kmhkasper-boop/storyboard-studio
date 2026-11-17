@@ -20,6 +20,12 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
 - **Replace an image or clip:** drop a file on a page. Or click the page and use **File…**, **From folder…** (files already in the project folder), or **Drive link / path…** (paste a Drive share link). You can also paste an image or a Drive link while a page is selected.
   - When the folder is open, a dropped file is copied into a `media/` subfolder, and the page points to it.
 - **▶ Play:** an animatic with pages in order and their durations. Clips play inline when the folder is open, with lyrics as captions. If you set the song in ⚙ Project settings, it plays underneath. With **page timecodes** turned on, each page jumps to its own song time.
+- **Big preview (v3.3), Space:** click a page (it gets a ring), or click a scene or slot header, then press **Space**. A large preview opens with the image or the picked clip. Clips play muted with speed, in/out and cuts, like Play. The caption shows page number, code, duration, song time, role, status, lyrics and a short description.
+  - **Close:** Space again, **Esc**, ✕, or a click next to it.
+  - **Move around:** **←/→** go to the previous/next page across scenes (only active alternatives, following the current variant), and **↑/↓** jump between scenes. The board selection follows along.
+  - **Drawer:** **Enter** or **Open in drawer** opens the page in the big drawer.
+  - **Mouse and touch:** the 👁 button on a card opens the preview; swipe left or right inside it.
+  - **Space and other keys:** Space never fires while you're typing in a field. **P** still starts Play (also ▶ Play), and inside Play, Space still pauses and resumes. Double-click still opens the drawer. If Space ever gets in the way, the 👁 button does the same.
 - **Script view:** the whole storyboard reads as text, scene by scene.
 - **Status per page:** idea → prompted → rendered → picked → in edit → final, or cut (skipped in Play). Old files load with `image` read as *rendered* and `animated` as *picked*. You can filter the board by status or character.
 - **Breakout drawer (v2):** double-click a page, or press ⤢ in the editor, to open a large panel with these tabs:
@@ -59,7 +65,16 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
 - **Auto-link** (☰ menu): matches numbered files such as `shot 03.jpg` or `SB2_03_v2.mp4` to pages; the highest _v number wins, and its version label (v2) is stored.
 - **Import Mirrage text** (☰): paste one of Mirrage's storyboard docs to turn it into pages. **Export Markdown** does the reverse.
 - **Print / PDF** (☰): 6 pages per A4 sheet.
-- **Undo / redo:** ⌘Z and ⇧⌘Z. Save is ⌘S, and autosave is on when a folder is open.
+- **Keyboard:**
+  - Space: big preview
+  - P: Play
+  - N: new page after the selected one
+  - ←/→: previous/next page
+  - Esc: deselect / close
+  - ⌘Z / ⇧⌘Z: undo / redo
+  - ⌘S: save (autosave is on when a folder is open)
+
+  The full list is under ☰ → Help.
 
 ## Good to know
 

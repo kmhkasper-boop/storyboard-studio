@@ -1,4 +1,4 @@
-# Storyboard file format v3.2 (for Mirrage)
+# Storyboard file format v3.3 (for Mirrage)
 
 Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive project folder of a video. Lucas edits it in the app; you (Mirrage) read and edit the same file with the Drive connector. There is no database and no hidden state: **the file is the storyboard.**
 
@@ -6,6 +6,8 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **What's new in v3.3** (no file changes, still `"version": 3`): an import event with **most of its duration inside a `cut`/bridged page** is now a "hole event". It always becomes a nearest-page suggestion (that `reject` can decline), even when a frame of it touches a real page. The app also gained the Space preview (see README); it doesn't affect the file.
+>
 > **What's new in v3.2** (no new fields, still `"version": 3`):
 > - **Import assignment:** the majority is computed on the raw times; snapping only aligns edges and breaks ties.
 > - **Overruns:** single events are checked too.
@@ -283,7 +285,7 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
   - **Snapping.** Edges within the **snap** tolerance of a page boundary (default 4 frames, adjustable) are aligned to it. This is used only to break ties (within half a frame), e.g. an event 3 frames before and 3 after a boundary goes to the page it snaps into; after that, the earlier page wins. An event shorter than 2 × snap gets at most one edge snapped (the nearer one), so no event ever collapses to zero length.
   - **Preview marks.** The preview shows both snap deltas (`⇥in +3f out −2f`; the plan keeps them as `snapped: {start, end}` in seconds).
   - **Overruns.** The preview flags every page whose events add up to more than the page, **including a page with a single event**. On apply, an overrunning single event is stored as **one cut** with its real duration, so the card shows the overrun and the drawer can trim or stretch it. With *trim last cut to fit* ticked, it becomes the page video with `out = in + page length × |speed|`.
-  - **Inside cut pages.** An event that falls inside the song time of a `cut` (or bridged) page has no page of its own. The preview **suggests the nearest page by time** (ticked by default). Untick it per row, or switch suggestions off, to leave the event unassigned. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
+  - **Inside cut pages.** An event with **more than half of its duration** inside the song time of a `cut` (or bridged) page is a *hole event* (v3.3). It is never majority-assigned, even if a frame of it overlaps a real page (e.g. #150: 1 frame on page 05, the rest inside bridged page 06). The preview **suggests the nearest page by time** (ticked by default). Untick it per row, or switch suggestions off, to leave the event unassigned. A page that gets one event: `video` with `in`/`out` and `speed` are set. A page that gets several: they become its `cuts`.
 - **Mode "into the selected page's cuts":** all events replace that page's `cuts`, with per-cut `duration` and `speed`.
 
 ## Rules for editing safely

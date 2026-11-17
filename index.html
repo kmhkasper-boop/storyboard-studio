@@ -64,6 +64,7 @@
   <label class="zoom" title="Card size">🔍<input id="zoom" type="range" min="140" max="420" step="10" value="240"></label>
   <label class="chk" title="Show lyrics and description on cards"><input type="checkbox" id="showText" checked> text</label>
   <span id="variantWrap" hidden><select id="variantSel" aria-label="Variant" title="Variant: a named set of active alternatives"></select><button id="btnVariants" title="Manage variants">⇄</button></span>
+  <span class="kbd-hint" title="Click a page or scene header, then press Space for a big preview. P = Play.">⌨ Space = preview</span>
   <div class="spacer"></div>
   <button id="btnAddScene">+ Scene</button>
 </div>
@@ -91,6 +92,18 @@
   <aside id="editor" hidden aria-label="Page editor"></aside>
 </div>
 
+<div id="qlook" hidden role="dialog" aria-label="Page preview">
+  <div class="ql-box">
+    <div id="qlStage">
+      <img id="qlImg" alt="" hidden draggable="false"><video id="qlVid" playsinline muted hidden></video><div id="qlBlank" hidden></div>
+      <button id="qlPrev" class="ql-nav" title="Previous page (←)">‹</button><button id="qlNext" class="ql-nav" title="Next page (→)">›</button>
+    </div>
+    <div class="ql-cap">
+      <div id="qlHead"></div><div id="qlTitle"></div><div id="qlLyr"></div><div id="qlDesc"></div>
+      <div class="ql-actions"><span class="muted">Space / Esc / click outside to close · ←/→ pages · ↑/↓ scenes</span><button id="qlOpenDrawer" title="Open in drawer (Enter)">Open in drawer ⏎</button><button id="qlClose" title="Close (Space / Esc)">✕</button></div>
+    </div>
+  </div>
+</div>
 <div id="player" hidden>
   <div class="stage">
     <img id="plImg" alt="">

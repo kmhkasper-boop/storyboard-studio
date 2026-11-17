@@ -284,6 +284,7 @@
     if (p.flag) thumb.append(el('span', { class: 'flag', title: p.flag }, '⚑ ' + p.flag.slice(0, 18)));
     if (p.role && p.role !== 'linear') thumb.append(el('span', { class: 'role role-' + p.role, title: S.ROLES.find(r => r.id === p.role).label }, { insert: 'INSERT', flashForward: '⏩ FLASH-FWD', flashBack: '⏪ FLASHBACK' }[p.role]));
     fillThumb(thumb, p);
+    thumb.append(el('button', { class: 'card-ql', title: 'Big preview (Space)', 'aria-label': 'Big preview', onclick: (e) => { e.stopPropagation(); qlOpen(p.id); } }, '👁'));
     const sp = S.speedOf(p); const warn = S.durationWarning(p, doc); const gi = gapFor(p.id);
     const chips2 = [
       sp !== 1 ? el('span', { class: 'chip spd', title: 'Playback speed' + (p.retime ? ' · ' + p.retime : '') }, (sp < 0 ? '◀◀ ' + Math.abs(sp) + '×' : Math.round(sp * 100) + '%') + (p.retime ? ' · ' + ({ frame: 'frame', blend: 'blend', opticalFlow: 'opt. flow', speedWarp: 'warp' }[p.retime]) : '')) : null,
@@ -357,6 +358,7 @@
             el('button', { title: 'Delete scene', class: 'danger', onclick: () => deleteScene(s.id) }, '🗑'))),
         s.notes ? el('div', { class: 'muted', style: { margin: '-2px 0 8px 30px', fontSize: '12.5px', whiteSpace: 'pre-wrap' } }, s.notes) : null,
         grid);
+      sec.querySelector('.scene-head').addEventListener('click', (e) => { if (e.target.closest('input,button,select,textarea,.grip')) return; selectScene(s.id); });
       sortables.push(Sortable.create(grid, {
         group: 'pages', draggable: '.grid > .card, .grid > .pgroup', filter: '.add-card, .alt-tab', preventOnFilter: false, animation: 150, delayOnTouchOnly: true, delay: 180,
         ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen', onEnd: syncPagesFromDom
@@ -375,8 +377,10 @@
         el('div', { class: 'slot-head' }, el('span', { class: 'grip', title: 'Drag to move this slot with all its alternatives' }, '⠿'), el('span', { class: 'slot-name', title: 'Alternatives for one spot in the video. Only the active one plays and counts.' }, '⇄ Slot'), tabs,
           el('button', { class: 'slot-rename', title: 'Rename the alternative labels', onclick: () => renameSlotLabels(it.slot) }, '✎')),
         it.scenes.map(x => sceneSection(x, si, true)));
+      grp.querySelector('.slot-head').addEventListener('click', (e) => { if (e.target.closest('input,button,select,textarea,.grip')) return; selectScene(act.id); });
       board.append(grp);
     });
+    if (selScene) { const n = document.getElementById('scene-' + selScene); if (n) n.classList.add('sel-scene'); }
     sortables.push(Sortable.create(board, { handle: '.grip', draggable: '.bitem', animation: 150, onEnd: () => syncScenesFromDom($$('#board > .bitem').flatMap(n => n.dataset.ids.split(','))) }));
     sortables.push(Sortable.create($('#sceneList'), { animation: 150, delayOnTouchOnly: true, delay: 180, onEnd: () => syncScenesFromDom($$('#sceneList li').flatMap(n => n.dataset.ids.split(','))) }));
     $('#main').scrollTop = scrollTop;
@@ -436,7 +440,7 @@
 
   // ---------- editor ----------
   function select(id) {
-    selected = id;
+    selected = id; if (id) selectScene(null);
     $$('.card.sel').forEach(c => c.classList.remove('sel'));
     const c = id && document.querySelector('.card[data-id="' + CSS.escape(id) + '"]'); if (c) c.classList.add('sel');
     renderEditor();
@@ -1572,7 +1576,7 @@
 <li>Every save raises <code>revision</code>; if the file changed since you opened it, you are asked before anything is overwritten.</li>
 <li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser. Videos show a still and an ↗ Drive link.</li>
 </ul>
-<p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>P</code> play · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
+<p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>Space</code> big preview of the selected page or scene (Space / Esc / click outside closes; ←/→ pages, ↑/↓ scenes, Enter opens the drawer; also the 👁 button on a card, swipe on touch) · <code>P</code> play (Space plays/pauses only inside Play mode) · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
       el('div', { class: 'modal-actions' }, el('button', { class: 'primary', onclick: closeModal }, 'OK'))));
   }
 
@@ -1733,6 +1737,96 @@
     if (i < 0) i = 0; const off = t - pl.starts[i]; pl.t0 = performance.now() - off * 1000; showStep(i, off); updateBar();
   });
 
+
+  // ---------- v3.3: Quick Look style big preview (Space) ----------
+  let selScene = null;
+  function selectScene(id) {
+    selScene = id; $$('.scene.sel-scene').forEach(n => n.classList.remove('sel-scene'));
+    if (id) { selected = null; $$('.card.sel').forEach(c => c.classList.remove('sel')); renderEditor(); const n = document.getElementById('scene-' + id); if (n) n.classList.add('sel-scene'); }
+  }
+  const ql = { open: false, id: null, segs: [], seg: -1, t0: 0, raf: 0, token: 0, lastSeek: 0 };
+  /** Page to preview: the selected page, else the first active page of the selected scene/slot (or of the whole board). */
+  function qlTarget() {
+    if (selected && findPage(selected)) return selected;
+    const ad = S.activeDoc(doc);
+    if (selScene) { let sc = ad.scenes.find(x => x.id === selScene); if (!sc) { const s0 = sceneOf(selScene); sc = s0 && s0.slot ? ad.scenes.find(x => x.slot === s0.slot) : null; } if (sc && sc.pages.length) return sc.pages[0].id; }
+    return null;
+  }
+  async function qlOpen(id) {
+    if (!doc || !id) return; const f = findPage(id); if (!f) return;
+    ql.open = true; $('#qlook').hidden = false; document.body.classList.add('ql-on');
+    await qlShow(id);
+  }
+  async function qlShow(id) {
+    const f = findPage(id); if (!f) return; const p = f.page; ql.id = id;
+    if (selected !== id) select(id);
+    const c = document.querySelector('.card[data-id="' + CSS.escape(id) + '"]'); if (c) c.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const seq = activePages(); const i = seq.findIndex(x => x.id === id);
+    const role = p.role && p.role !== 'linear' ? S.ROLES.find(r => r.id === p.role).label : 'linear';
+    const st = (S.STATUSES.find(x => x.id === p.status) || { label: p.status }).label; const sp = S.speedOf(p);
+    $('#qlHead').textContent = 'Page ' + pageNumber(id) + (i >= 0 ? ' / ' + seq.length : ' (inactive alternative)') + (p.code ? ' · code ' + p.code : '') + ' · ' + (Math.round(dur(p) * 100) / 100) + ' s' + (p.start ? ' · ♪ ' + [p.start, p.end].filter(Boolean).join('–') : '') + ' · ' + role + ' · ' + st + (sp !== 1 ? ' · ' + (sp < 0 ? '◀ ' : '') + Math.round(Math.abs(sp) * 100) + '%' : '') + (p.cuts.length ? ' · ' + p.cuts.length + ' cuts' : '') + ' · ' + f.scene.title;
+    $('#qlTitle').textContent = p.title || '';
+    $('#qlLyr').textContent = lyr(p) || '';
+    const d = p.description || ''; $('#qlDesc').textContent = d.length > 220 ? d.slice(0, 217) + '…' : d;
+    $('#qlPrev').disabled = i <= 0; $('#qlNext').disabled = i < 0 || i >= seq.length - 1;
+    const token = ql.token = Math.random(); cancelAnimationFrame(ql.raf);
+    const segs = await buildSegments(p); if (token !== ql.token || !ql.open) return;
+    ql.segs = segs; ql.seg = -1; ql.t0 = performance.now(); qlRender(true); ql.raf = requestAnimationFrame(qlTick);
+  }
+  function qlSegAt(t, p) {
+    const total = ql.segs.reduce((a, s) => a + s.dur, 0) || 1; let x = ql.segs.length > 1 ? t % total : t; let k = 0; // cuts loop within the page, like Play
+    while (k < ql.segs.length - 1 && x >= ql.segs[k].dur) { x -= ql.segs[k].dur; k++; }
+    return { k, x };
+  }
+  function qlRender(force) {
+    if (!ql.segs.length) return; const p = findPage(ql.id).page;
+    const el2 = (performance.now() - ql.t0) / 1000; const { k, x } = qlSegAt(el2, p); const sg = ql.segs[k];
+    const img = $('#qlImg'), vid = $('#qlVid'), blank = $('#qlBlank');
+    if (force || k !== ql.seg) {
+      ql.seg = k; img.hidden = true; vid.hidden = true; blank.hidden = true; vid.pause();
+      if (sg.kind === 'video') {
+        if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
+        vid.muted = true; vid.hidden = false; const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed))); vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
+        const seek = () => { try { vid.currentTime = videoTimeFor(sg, x, vid); } catch { } if (sg.speed > 0) vid.play().catch(() => {}); };
+        if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
+      } else if (sg.kind === 'image') {
+        img.onerror = () => { img.hidden = true; blank.hidden = false; blank.textContent = p.description || p.lyrics || '(image not available)'; };
+        img.src = sg.r.kind === 'drive' ? driveThumb(sg.media.driveId || (p.image && p.image.driveId) || (p.video && p.video.driveId), 1920) : sg.r.src; img.hidden = false;
+      } else { blank.hidden = false; blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)'); }
+      return;
+    }
+    if (sg.kind === 'video' && vid.readyState >= 1) {
+      const want = videoTimeFor(sg, x, vid); const m = sg.media || {};
+      if (sg.speed < 0) { if (!vid.paused) vid.pause(); if (!vid.seeking && performance.now() - ql.lastSeek > 40) { ql.lastSeek = performance.now(); try { vid.currentTime = want; } catch { } } }
+      else if (m.out !== undefined && vid.currentTime >= m.out - 0.02) { if (!vid.paused) vid.pause(); }
+      else if (Math.abs(vid.currentTime - want) > 0.3 && !vid.seeking) { try { vid.currentTime = want; } catch { } }
+      else if (vid.paused && !vid.ended) vid.play().catch(() => {});
+    }
+  }
+  function qlTick(now) {
+    if (!ql.open) return; const p = findPage(ql.id) && findPage(ql.id).page; if (!p) return qlClose();
+    if ((now - ql.t0) / 1000 >= dur(p)) { ql.t0 = now; qlRender(true); } else qlRender(false); // the page loops
+    ql.raf = requestAnimationFrame(qlTick);
+  }
+  function qlStep(delta) { const seq = activePages(); let i = seq.findIndex(x => x.id === ql.id); if (i < 0) { const f = findPage(ql.id); i = seq.findIndex(x => x.id === (f && f.page.altOf)); } const n = seq[i + delta]; if (n) qlShow(n.id); }
+  function qlScene(delta) {
+    const ad = S.activeDoc(doc); const scs = ad.scenes.filter(x => x.pages.length); const cur = scs.findIndex(x => x.pages.some(q => q.id === ql.id));
+    const t = scs[(cur < 0 ? 0 : cur) + delta]; if (t) qlShow(t.pages[0].id);
+  }
+  function qlClose() {
+    ql.open = false; ql.token = 0; cancelAnimationFrame(ql.raf); $('#qlook').hidden = true; document.body.classList.remove('ql-on');
+    const v = $('#qlVid'); v.pause(); v.removeAttribute('src'); v.load();
+    const c = ql.id && document.querySelector('.card[data-id="' + CSS.escape(ql.id) + '"]'); if (c) c.focus({ preventScroll: true });
+  }
+  function qlDrawer() { const id = ql.id; qlClose(); drawer = true; select(id); renderEditor(); }
+  $('#qlook').addEventListener('click', (e) => { if (e.target.id === 'qlook') qlClose(); });
+  $('#qlClose').onclick = qlClose; $('#qlPrev').onclick = () => qlStep(-1); $('#qlNext').onclick = () => qlStep(1); $('#qlOpenDrawer').onclick = qlDrawer;
+  { let sx = null, sy = 0; const st = $('#qlStage');
+    st.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') return; sx = e.clientX; sy = e.clientY; }); st.addEventListener('dragstart', (e) => e.preventDefault());
+    st.addEventListener('pointerup', (e) => { if (sx === null || e.pointerType === 'touch') return; const dx = e.clientX - sx, dy = e.clientY - sy; sx = null; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) qlStep(dx < 0 ? 1 : -1); });
+    st.addEventListener('touchstart', (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; }, { passive: true });
+    st.addEventListener('touchend', (e) => { if (sx === null) return; const t = e.changedTouches[0]; const dx = t.clientX - sx, dy = t.clientY - sy; sx = null; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) qlStep(dx < 0 ? 1 : -1); }); }
+
   // ---------- IndexedDB (remember the last folder) ----------
   function idb() { return new Promise((res, rej) => { const r = indexedDB.open('storyboard-studio', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
   async function idbSet(k, v) { const db = await idb(); return new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
@@ -1772,7 +1866,14 @@
   $('#fileDir').addEventListener('change', (e) => onDirInput(Array.from(e.target.files)));
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', (e) => {
-    const mod = e.metaKey || e.ctrlKey; const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+    const ae = document.activeElement; const mod = e.metaKey || e.ctrlKey; const typing = !!ae && (/INPUT|TEXTAREA|SELECT/.test(ae.tagName) || ae.isContentEditable);
+    if (ql.open) { // v3.3 preview keys
+      if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); qlClose(); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); qlStep(1); } else if (e.key === 'ArrowLeft') { e.preventDefault(); qlStep(-1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); qlScene(1); } else if (e.key === 'ArrowUp') { e.preventDefault(); qlScene(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); qlDrawer(); }
+      return;
+    }
     if (!$('#player').hidden) {
       if (e.key === 'Escape') closePlayer(); else if (e.key === ' ') { e.preventDefault(); pl.playing ? pause() : resume(); } else if (e.key === 'ArrowRight') stepTo(pl.i + 1); else if (e.key === 'ArrowLeft') stepTo(pl.i - 1);
       return;
@@ -1782,6 +1883,7 @@
     if (mod && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
     if (mod && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); return redo(); }
     if (typing || mod || e.altKey || !doc || !$('#modal').hidden) return;
+    if (e.key === ' ') { e.preventDefault(); const t = qlTarget(); if (t) qlOpen(t); else toast('Click a page (or a scene header) first, then press Space for a big preview.'); return; }
     if (e.key === 'p' || e.key === 'P') play(selected);
     else if ((e.key === 'n' || e.key === 'N') && doc.scenes.length) { e.preventDefault(); const f = selected && findPage(selected); addPage(f ? f.scene.id : doc.scenes[doc.scenes.length - 1].id, f ? selected : null); }
     else if (e.key === 'Escape') select(null);
@@ -1820,6 +1922,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
+  window.__sb = { qlOpen, qlClose, get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
   init();
 })();

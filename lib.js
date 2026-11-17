@@ -1088,17 +1088,19 @@
         const a0 = ea !== null ? ea : a, b0 = b === null ? null : eb !== null ? eb : b;
         row.snapped = { start: Math.round((a0 - a) * 1000) / 1000, end: b === null ? 0 : Math.round((b0 - b) * 1000) / 1000 };
         let best = null;
-        if (b !== null) {
+        // v3.3: a "hole event" (most of its duration inside a cut/bridged page) is never majority-assigned; it becomes a nearest-page suggestion
+        const holeEv = b !== null && holes.some(h => ovl(a, b, h) > (b - a) / 2 + 1e-6);
+        if (b !== null && !holeEv) {
           // majority on the raw, unsnapped times; ties (within half a frame) are broken by the snapped overlap, then the earlier page
           const sc = targets.map(t => ({ t, raw: ovl(a, b, t), sn: ovl(a0, b0, t) })).filter(x => x.raw > 1e-6);
           const top = sc.reduce((m, x) => Math.max(m, x.raw), 0); const tied = sc.filter(x => x.raw >= top - 0.5 / fps);
           if (tied.length) best = tied.reduce((m, x) => (x.sn > m.sn + 1e-6 ? x : m), tied[0]).t;
         }
-        if (!best) best = targets.find(t => a + 0.001 >= t.a && a + 0.001 < t.b) || null;
+        if (!best && !holeEv) best = targets.find(t => a + 0.001 >= t.a && a + 0.001 < t.b) || null;
         row.pageId = best ? best.p.id : null;
         if (!row.pageId && targets.length) { // v3.2: inside a cut/bridged page (or outside every page): suggest the nearest neighbour by time
           const e2 = b !== null ? b : a; const mid = (a + e2) / 2;
-          const hole = holes.find(h => (b !== null ? ovl(a, e2, h) > 1e-6 : a >= h.a && a < h.b)) || holes.find(h => mid >= h.a && mid <= h.b);
+          const hole = holes.slice().sort((h1, h2) => (b !== null ? ovl(a, e2, h2) - ovl(a, e2, h1) : 0)).find(h => (b !== null ? ovl(a, e2, h) > 1e-6 : a >= h.a && a < h.b)) || holes.find(h => mid >= h.a && mid <= h.b);
           const dist = (t) => (e2 <= t.a ? t.a - e2 : a >= t.b ? a - t.b : 0);
           const nb = targets.reduce((m, t) => (!m || dist(t) < dist(m) - 1e-6 ? t : m), null);
           if (nb) {
