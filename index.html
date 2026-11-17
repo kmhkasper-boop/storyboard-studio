@@ -22,6 +22,8 @@
   <div class="spacer"></div>
   <div class="seg" role="tablist">
     <button data-view="board" class="on" title="Board view">Board</button>
+    <button data-view="story" title="Story view: each storyline in story order">Story</button>
+    <button data-view="edit" title="Edit view: storylines woven on the song timeline">Edit</button>
     <button data-view="script" title="Script view (reads as prose)">Script</button>
   </div>
   <button id="btnUndo" title="Undo (Ctrl/Cmd+Z)">↶</button>
@@ -61,6 +63,7 @@
   <input id="search" type="search" placeholder="Search pages…" aria-label="Search">
   <select id="fStatus" aria-label="Filter by status"><option value="">All statuses</option></select>
   <select id="fChar" aria-label="Filter by character"><option value="">All characters</option></select>
+  <select id="fStory" aria-label="Filter by storyline" hidden><option value="*">All storylines</option></select>
   <label class="zoom" title="Card size">🔍<input id="zoom" type="range" min="140" max="420" step="10" value="240"></label>
   <label class="chk" title="Show lyrics and description on cards"><input type="checkbox" id="showText" checked> text</label>
   <span id="variantWrap" hidden><select id="variantSel" aria-label="Variant" title="Variant: a named set of active alternatives"></select><button id="btnVariants" title="Manage variants">⇄</button></span>
@@ -77,6 +80,8 @@
   <main id="main">
     <div id="board"></div>
     <div id="script" hidden></div>
+    <div id="storyView" hidden></div>
+    <div id="editView" hidden></div>
     <div id="empty" hidden>
       <h1>Storyboard Studio</h1>
       <p>A storyboard you and Mirrage can both edit. It lives as a plain <code>storyboard.json</code> in your Drive project folder.</p>

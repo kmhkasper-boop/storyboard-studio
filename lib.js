@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const FORMAT = 'storyboard-studio';
-  const VERSION = 3;
+  const VERSION = 4;
   // v2: one status ladder (Mirrage's pipeline + the v1 values). v1 'image' -> 'rendered', 'animated' -> 'picked'.
   const STATUSES = [
     { id: 'idea', label: 'Idea / text only' },
@@ -41,6 +41,7 @@
   ];
   const RETIME_IDS = RETIMES.map(r => r.id);
   const PAGE_FIELDS = ['title', 'code', 'start', 'end', 'camera', 'mood', 'lyrics', 'description', 'imagePrompt', 'imageTool', 'videoPrompt', 'videoTool', 'negativePrompt', 'negativeTool', 'notes', 'flag', 'effect'];
+  const STORY_COLORS = ['#ff6b6b', '#4dabf7', '#ffd43b', '#69db7c', '#da77f2', '#ffa94d', '#38d9a9', '#f783ac'];
   const SCENE_COLORS = ['#ffb84d', '#6aa8ff', '#b67cff', '#4fd18b', '#ff6b9a', '#4fd1d1', '#d1c44f', '#ff7b4d'];
 
   function uid(prefix) {
@@ -157,6 +158,7 @@
     let screen = 0, songStart = null, songEnd = null; const gaps = [], overlaps = [];
     let prev = null, between = 0;
     for (const s of doc.scenes) for (const p of s.pages) {
+      if (p.pool) continue; // v4: pool pages are not in the edit
       if (p.status === 'cut' && !p.bridged) continue;
       if (p.status === 'cut') { // v3.1 bridged: no screen time, but its song time counts as covered in the gap check
         const a = parseTime(p.start), b = parseTime(p.end);
@@ -318,6 +320,9 @@
     out.cuts = Array.isArray(p.cuts) ? p.cuts.map(normCut).filter(Boolean) : [];
     const gs = num(p.genSeconds); out.genSeconds = gs > 0 ? gs : null;
     out.bridged = p.bridged === true; // v3.1: a status-cut page whose song time the real edit bridged (gap check treats it as covered)
+    out.storyline = p.storyline ? String(p.storyline) : ''; // v4
+    const so = num(p.storyOrder); out.storyOrder = so !== null && so > 0 ? so : null; // v4: position inside its storyline (story order)
+    out.pool = p.pool === true; // v4: in the pool, not meant for the edit (yet)
     out.altOf = p.altOf ? String(p.altOf) : ''; out.altLabel = p.altLabel ? String(p.altLabel) : ''; out.active = p.active !== false;
     out.characters = normCastRefs(p.characters);
     out.takes = Array.isArray(p.takes) ? p.takes.map(normTake).filter(Boolean) : [];
@@ -345,6 +350,13 @@
     };
   }
 
+  /** v4 storyline: {id, name, color, notes}. "colour" is accepted as an alias of "color". */
+  function normStoryline(x, i) {
+    x = x && typeof x === 'object' ? x : {};
+    const c = x.color || x.colour || '';
+    const id = x.id ? String(x.id) : 'sl_' + (slug(x.name || '') || uid('').slice(1));
+    return { id, name: x.name ? String(x.name) : id, color: /^#[0-9a-f]{6}$/i.test(c) ? c : STORY_COLORS[i % STORY_COLORS.length], notes: x.notes ? String(x.notes) : '' };
+  }
   function normalizeDoc(d) {
     d = d && typeof d === 'object' ? d : {};
     let scenes = Array.isArray(d.scenes) ? d.scenes : null;
@@ -367,6 +379,7 @@
       fps: num(d.fps) > 0 ? num(d.fps) : null,
       variants: Array.isArray(d.variants) ? d.variants.filter(v => v && typeof v === 'object').map((v, i) => ({ id: v.id ? String(v.id) : 'v' + (i + 1), name: v.name ? String(v.name) : 'Variant ' + (i + 1), slots: strMap(v.slots), pages: strMap(v.pages) })) : [],
       activeVariant: d.activeVariant ? String(d.activeVariant) : '',
+      storylines: Array.isArray(d.storylines) ? d.storylines.filter(x => x && typeof x === 'object' && (x.id || x.name)).map(normStoryline) : [],
       notes: d.notes ? String(d.notes) : '',
       updated: d.updated ? String(d.updated) : '',
       updatedBy: d.updatedBy ? String(d.updatedBy) : '',
@@ -379,6 +392,8 @@
       if (seen.has(s.id)) s.id = uid('s'); seen.add(s.id);
       for (const p of s.pages) { if (seen.has(p.id)) p.id = uid('p'); seen.add(p.id); }
     }
+    { const sl = new Set(); out.storylines = out.storylines.filter(x => !sl.has(x.id) && sl.add(x.id)); } // v4: unique storyline ids
+    for (const s of out.scenes) for (const p of s.pages) if (p.storyline && !out.storylines.some(x => x.id === p.storyline)) out.storylines.push(normStoryline({ id: p.storyline, name: p.storyline }, out.storylines.length));
     regroup(out);
     if (out.activeVariant && !out.variants.find(v => v.id === out.activeVariant)) out.activeVariant = '';
     // unknown character ids referenced by pages become characters
@@ -409,7 +424,7 @@
     for (const s of pre.scenes || []) { s.characters = (s.characters || []).map(castRefOut); for (const p of s.pages || []) p.characters = (p.characters || []).map(castRefOut); }
     const d = clean(pre);
     // keep the header fields first for humans/Mirrage
-    const order = ['format', 'version', 'revision', 'title', 'project', 'updated', 'updatedBy', 'aspect', 'defaultDuration', 'driveFolderId', 'audio', 'audioOffset', 'fps', 'activeVariant', 'variants', 'characters', 'songLyrics', 'notes', 'scenes'];
+    const order = ['format', 'version', 'revision', 'title', 'project', 'updated', 'updatedBy', 'aspect', 'defaultDuration', 'driveFolderId', 'audio', 'audioOffset', 'fps', 'activeVariant', 'variants', 'storylines', 'characters', 'songLyrics', 'notes', 'scenes'];
     const out = {};
     for (const k of order) if (k in d) out[k] = d[k];
     for (const k of Object.keys(d)) if (!(k in out)) out[k] = d[k];
@@ -457,11 +472,14 @@
       [/^(camera|shot)$/i, 'camera'], [/^notes?$/i, 'notes'], [/^flag$/i, 'flag'],
       [/^(title)$/i, 'title'], [/^(characters?|cast)$/i, '_chars'], [/^duration$/i, '_dur'],
       [/^role$/i, '_role'], [/^speed$/i, '_speed'], [/^retime$/i, '_retime'], [/^effects?$/i, 'effect'],
-      [/^image$/i, '_image'], [/^video$/i, '_video'], [/^cuts$/i, '_cuts']
+      [/^storyline$/i, '_storyline'], [/^image$/i, '_image'], [/^video$/i, '_video'], [/^cuts$/i, '_cuts']
     ];
+    const storylines = []; // v4: names seen in "**Storylines:**" or "Storyline:" lines
+    const slName = (v) => { const raw = String(v).replace(/\s*\(#[0-9a-f]{6}\)\s*$/i, '').trim(); const c = (String(v).match(/#[0-9a-f]{6}/i) || [''])[0]; if (!raw) return ''; let x = storylines.find(q => q.name.toLowerCase() === raw.toLowerCase()); if (!x) { x = { id: 'sl_' + slug(raw), name: raw, color: c }; storylines.push(x); } else if (c && !x.color) x.color = c; return x.id; };
     for (let raw of lines) {
       const line = raw.trim();
       let m;
+      if ((m = line.match(/^\*\*Storylines:\*\*\s*(.*)$/i))) { m[1].split(/,\s*(?![^()]*\))/).forEach(slName); continue; }
       if ((m = line.match(/^#{1,4}\s*(?:\*\*)?\s*scene\b[\s:·.\-–—]*(?:\d+\s*[·:.\-–—]\s*)?(.*?)(?:\*\*)?$/i))) {
         scene = { title: m[1].trim() || 'Scene ' + (scenes.length + 1), pages: [] }; scenes.push(scene); page = null; field = null; continue;
       }
@@ -485,6 +503,9 @@
           if (k === 'status') page.status = v; else if (k === 'code') page.code = v;
           else if (k === 'characters') page.characters = parseCastList(v);
           else if (k === 'duration' && /explicit/.test(v)) page.duration = parseFloat(v);
+          else if (k === 'storyline') page.storyline = slName(v);
+          else if (k === 'story order') { const so = parseFloat(v); if (so > 0) page.storyOrder = so; }
+          else if (k === 'pool') page.pool = /^(yes|true|1)$/i.test(v);
         }
         continue;
       }
@@ -497,6 +518,7 @@
         if (hit) {
           field = hit[1];
           if (field === '_chars') { page.characters = parseCastList(value); field = null; continue; }
+          if (field === '_storyline') { page.storyline = slName(value); field = null; continue; }
           if (field === '_takes') { page.takes = page.takes || []; continue; }
           if (field === '_gen') { const g = parseFloat(value); if (g > 0) page.genSeconds = g; field = null; continue; }
           if ((field === 'imagePrompt' || field === 'videoPrompt' || field === 'negativePrompt') && paren && toolId(paren)) { page[field.replace('Prompt', 'Tool')] = toolId(paren); paren = ''; }
@@ -517,7 +539,9 @@
       for (const k of Object.keys(p)) if (typeof p[k] === 'string') p[k] = p[k].replace(/\*\*/g, '').trim();
       if (!p.role) { const hay = (p.title || '') + ' ' + (p.lyrics || ''); if (/flash[\s-]?forward/i.test(hay)) p.role = 'flashForward'; else if (/flash[\s-]?back/i.test(hay)) p.role = 'flashBack'; }
     }
-    return scenes.filter(s => s.pages.length).map(normScene);
+    const res = scenes.filter(s => s.pages.length).map(normScene);
+    res.storylines = storylines.map((x, i) => normStoryline(x, i)); // v4: merge these into doc.storylines when importing
+    return res;
   }
 
   /** "Saisha [linen], Steeve" -> [{charId:'saisha', lookId:'linen'}, 'steeve'] */
@@ -569,17 +593,21 @@
     const meta = [doc.project, doc.updated ? 'updated ' + doc.updated.slice(0, 10) : '', doc.updatedBy ? 'by ' + doc.updatedBy : ''].filter(Boolean).join(' · ');
     if (meta) out.push('*' + meta + '*', '');
     if (doc.notes) out.push(doc.notes, '');
+    if ((doc.storylines || []).length) out.push('**Storylines:** ' + doc.storylines.map(x => x.name + ' (' + x.color + ')').join(', '), '');
     let n = 0, total = 0;
     doc.scenes.forEach((s, si) => {
       out.push('---', '', '## SCENE ' + (si + 1) + ' · ' + s.title, '');
       if (s.notes) out.push('*' + s.notes + '*', '');
       for (const p of s.pages) {
         n++;
-        const dur = pageDuration(p, doc); if (p.status !== 'cut') total += dur;
+        const dur = pageDuration(p, doc); if (p.status !== 'cut' && !p.pool) total += dur;
         const tc = p.start || p.end ? ' · ' + [p.start, p.end].filter(Boolean).join('-') : '';
         out.push('### PAGE ' + pad2(n) + tc + (p.title ? ' · ' + p.title : ''), '');
         const meta2 = ['Status: ' + p.status, 'Duration: ' + (Math.round(dur * 100) / 100) + ' s' + (p.duration ? ' (explicit)' : '')];
         if (p.code && p.code !== pad2(n)) meta2.push('Code: ' + p.code);
+        if ((doc.storylines || []).length && storylineOf(doc, p)) meta2.push('Storyline: ' + storylineById(doc, p.storyline).name);
+        if (p.storyOrder) meta2.push('Story order: ' + p.storyOrder);
+        if (p.pool) meta2.push('Pool: yes');
         if (p.characters.length) meta2.push('Characters: ' + p.characters.map(r => (doc.characters.find(c => c.id === r.charId) || { name: r.charId }).name + (r.lookId ? ' [' + r.lookId + ']' : '')).join(', '));
         out.push('*' + meta2.join(' · ') + '*', '');
         if (p.lyrics) out.push('**Lyrics:** ' + p.lyrics, '');
@@ -712,7 +740,7 @@
     doc = activeDoc(doc);
     const rows = []; let n = 0, rec = 0;
     for (const s of doc.scenes) for (const p of s.pages) {
-      n++; if (p.status === 'cut') continue;
+      n++; if (p.status === 'cut' || p.pool) continue;
       const d = pageDuration(p, doc); const sp = speedOf(p);
       const base = { page: pad2(n), id: p.id, code: p.code, role: p.role || 'linear', title: p.title, scene: s.title, songIn: p.start, songOut: p.end, effect: p.effect, retime: p.retime };
       const srcOf = (m, dd, sv) => { const a = m && m.in !== undefined ? m.in : 0; const len = dd * Math.abs(sv); const b = m && m.out !== undefined ? Math.min(m.out, a + len) : a + len; return sv < 0 && m && m.out !== undefined ? { a: Math.max(a, m.out - len), b: m.out } : { a, b }; };
@@ -1056,7 +1084,7 @@
     const firstRec = events.reduce((a, e) => (e.recIn !== null && e.recIn !== undefined ? Math.min(a, e.recIn) : a), Infinity);
     const recordStart = opts.recordStart !== undefined && opts.recordStart !== null ? opts.recordStart : (firstRec >= 3600 ? 3600 : 0);
     const offset = opts.offset || 0; const bm = boardMedia(doc);
-    const targets = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status === 'cut') continue; const a = parseTime(p.start); if (a === null) continue; let b = parseTime(p.end); if (b === null || b <= a) b = a + pageDuration(p, doc); targets.push({ p, a, b }); }
+    const targets = []; for (const s of ad.scenes) for (const p of s.pages) { if (p.status === 'cut' || p.pool) continue; const a = parseTime(p.start); if (a === null) continue; let b = parseTime(p.end); if (b === null || b <= a) b = a + pageDuration(p, doc); targets.push({ p, a, b }); }
     const edges = [...new Set(targets.flatMap(t => [t.a, t.b]))];
     const nearestEdge = (x) => { let best = null, bd = snap + 1e-6; for (const e of edges) { const d = Math.abs(e - x); if (d <= bd) { bd = d; best = e; } } return best; };
     // cut / bridged pages with song time: events inside them get a neighbour suggestion
@@ -1135,8 +1163,76 @@
     return doc;
   }
 
+
+  // ---------- v4: storylines, story order, edit view ----------
+  /** Storylines to show. No storylines in the file → one implicit storyline (id ''). Pages without a known storyline go to an implicit "Unassigned" one. */
+  function storylineList(doc) {
+    const list = (doc.storylines || []).slice();
+    if (!list.length) return [{ id: '', name: 'Story', color: '#8a8aa0', notes: '', implicit: true }];
+    if (allPages(doc).some(p => !list.some(x => x.id === p.storyline))) list.push({ id: '', name: 'Unassigned', color: '#6c6c80', notes: '', implicit: true });
+    return list;
+  }
+  function storylineOf(doc, p) { return p && (doc.storylines || []).some(x => x.id === p.storyline) ? p.storyline : ''; }
+  function storylineById(doc, id) { return storylineList(doc).find(x => x.id === (id || '')) || storylineList(doc)[0]; }
+  /** A storyline's pages in story order: storyOrder first (pages without one follow), then board order. Same page objects as the board. */
+  function storyPages(doc, slId) {
+    const all = allPages(doc); const idx = new Map(all.map((p, i) => [p.id, i])); const key = (p) => (p.storyOrder === null || p.storyOrder === undefined ? Infinity : p.storyOrder);
+    return all.filter(p => storylineOf(doc, p) === (slId || '')).sort((a, b) => (key(a) - key(b)) || (idx.get(a.id) - idx.get(b.id)));
+  }
+  /** Rewrite storyOrder 1..n for a storyline from an id list (ids not listed keep their relative order after the listed ones). */
+  function setStoryOrder(doc, slId, ids) {
+    const pages = storyPages(doc, slId); const by = new Map(pages.map(p => [p.id, p]));
+    const ordered = ids.filter(id => by.has(id)).map(id => by.get(id)); for (const p of pages) if (!ordered.includes(p)) ordered.push(p);
+    ordered.forEach((p, i) => { p.storyOrder = i + 1; }); return doc;
+  }
+  /** Move a page into a storyline (at the end of its story order). */
+  function setPageStoryline(doc, pageId, slId) {
+    const p = allPages(doc).find(q => q.id === pageId); if (!p) return doc;
+    if ((p.storyline || '') === (slId || '') && storylineOf(doc, p) === (slId || '')) return doc;
+    const max = storyPages(doc, slId).reduce((a, q) => Math.max(a, q.storyOrder || 0), 0);
+    p.storyline = slId || ''; p.storyOrder = max + 1; return doc;
+  }
+  function addStoryline(doc, name, color) {
+    doc.storylines = doc.storylines || [];
+    const base = 'sl_' + (slug(name) || 'story'); let id = base, k = 2; while (doc.storylines.some(x => x.id === id)) id = base + '_' + k++;
+    const sl = normStoryline({ id, name: name || 'Storyline', color }, doc.storylines.length); doc.storylines.push(sl); return sl.id;
+  }
+  /** Delete a storyline; its pages become unassigned (pages are never deleted). */
+  function removeStoryline(doc, id) { doc.storylines = (doc.storylines || []).filter(x => x.id !== id); for (const p of allPages(doc)) if (p.storyline === id) p.storyline = ''; return doc; }
+  /** "Used in the edit" (v4): active scene alternative, active page alternative (= the current variant), status not cut, and not in the pool. */
+  function usageOf(doc, pageId) {
+    for (const s of doc.scenes) for (const p of s.pages) if (p.id === pageId) {
+      if (p.pool) return { used: false, reason: 'pool' };
+      if (s.active === false) return { used: false, reason: 'inactive scene alternative' };
+      if (p.active === false) return { used: false, reason: 'inactive alternative' };
+      if (p.status === 'cut') return { used: false, reason: 'cut' };
+      return { used: true, reason: '' };
+    }
+    return { used: false, reason: 'missing' };
+  }
+  function unusedPages(doc, slId) { return storyPages(doc, slId).map(p => Object.assign({ page: p }, usageOf(doc, p.id))).filter(x => !x.used); }
+  /** The woven edit on the song timeline: one block per used page (song start/end; pages without times follow the previous block by duration),
+   *  song gaps where no storyline has a shot, and the points where the edit switches storyline. */
+  function editTimeline(doc) {
+    const ad = activeDoc(doc); const blocks = []; const cover = []; let cursor = null; let order = 0;
+    for (const s of ad.scenes) for (const p of s.pages) {
+      const a0 = parseTime(p.start), b0 = parseTime(p.end);
+      if (p.status === 'cut' || p.pool) { if (p.status === 'cut' && p.bridged && a0 !== null && b0 !== null && b0 > a0) cover.push([a0, b0]); continue; }
+      const d = pageDuration(p, doc); const timed = a0 !== null;
+      const a = timed ? a0 : (cursor === null ? 0 : cursor); const b = b0 !== null && b0 > a ? b0 : a + d;
+      blocks.push({ id: p.id, page: p, sceneId: s.id, storyline: storylineOf(doc, p), start: a, end: b, timed, order: order++ });
+      cover.push([a, b]); cursor = b;
+    }
+    const start = blocks.length ? Math.min(...blocks.map(x => x.start)) : 0, end = blocks.length ? Math.max(...blocks.map(x => x.end)) : 0;
+    cover.sort((x, y) => x[0] - y[0]); const gaps = []; let reach = start;
+    for (const [a, b] of cover) { if (a - reach > 0.05) gaps.push({ from: reach, to: a, seconds: Math.round((a - reach) * 1000) / 1000 }); reach = Math.max(reach, b); }
+    const byTime = blocks.slice().sort((x, y) => x.start - y.start || x.order - y.order); const switches = [];
+    for (let i = 1; i < byTime.length; i++) if (byTime[i].storyline !== byTime[i - 1].storyline) switches.push({ at: byTime[i].start, from: byTime[i - 1].storyline, to: byTime[i].storyline, pageId: byTime[i].id });
+    const lanes = storylineList(doc).map(x => Object.assign({}, x, { count: blocks.filter(b => b.storyline === x.id).length, seconds: Math.round(blocks.filter(b => b.storyline === x.id).reduce((t, b) => t + (b.end - b.start), 0) * 1000) / 1000 }));
+    return { blocks, gaps, switches, lanes, start, end };
+  }
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
 
-  const api = { walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { STORY_COLORS, normStoryline, storylineList, storylineOf, storylineById, storyPages, setStoryOrder, setPageStoryline, addStoryline, removeStoryline, usageOf, unusedPages, editTimeline, walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);

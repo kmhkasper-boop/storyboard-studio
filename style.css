@@ -328,3 +328,51 @@ body.ql-on{overflow:hidden}
   #qlStage{flex:none;width:100%;aspect-ratio:var(--ql-ar,var(--aspect,16/9));max-height:calc(92vh - 64px)}
   .ql-nav{width:38px;height:60px;font-size:26px}
 }
+
+/* v4: storylines */
+.card[data-storyline]{border-top:3px solid var(--sl,transparent)}
+.card .sl-chip{background:color-mix(in srgb,var(--sl) 25%,transparent);color:var(--sl);border:1px solid var(--sl);border-radius:999px;padding:0 6px;font-size:10.5px;font-weight:600;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.chip.pool{background:#333;color:#bbb}
+#fStory[hidden]{display:none}
+.sl-row{align-items:flex-end;flex-wrap:wrap}.pool-row{font-size:13px;display:flex;gap:4px;align-items:center;padding-bottom:6px}
+.slm-row{display:flex;gap:8px;align-items:center;margin:6px 0}.slm-row input[type=color]{width:32px;height:28px;padding:0;border:0;background:none}.slm-name{flex:1}
+#storyView,#editView{padding:6px 4px 40px}
+.sv-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sv-tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sv-tab{border-radius:999px;display:flex;gap:6px;align-items:center;border:1px solid var(--line)}
+.sv-tab.on{border-color:var(--sl);background:color-mix(in srgb,var(--sl) 22%,transparent);color:#fff}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--sl)}
+.sv-tab .ct{color:var(--mut);font-size:12px}
+.sv-help{font-size:12.5px;margin:8px 2px}
+.sv-grid .card{position:relative}
+.sv-pos{position:absolute;left:6px;bottom:auto;top:6px;z-index:4;background:var(--sl,#444);color:#000;font-weight:800;border-radius:6px;padding:1px 7px;font-size:13px}
+.sv-grid .card .thumb .num{left:auto;right:44px}
+.card.sv-unused{opacity:.62}
+.sv-unused-list{margin-top:18px;border-top:1px solid var(--line);padding-top:8px}
+.sv-unused-list h3{font-size:14px;margin:4px 0 6px}.sv-unused-list ul{margin:0;padding-left:18px}.sv-unused-list li{margin:3px 0;display:flex;gap:8px;align-items:center}
+.ev-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.ev-toggles{display:flex;gap:6px;flex-wrap:wrap}
+.ev-toggle{border-radius:999px;display:flex;gap:6px;align-items:center;border:1px solid var(--sl)}
+.ev-toggle.off{opacity:.4;border-style:dashed}.ev-toggle.off .sw{background:transparent;border:1px solid var(--sl)}
+.ev-sum{font-size:12.5px}
+.ev-body{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0c0c11}
+.ev-names{flex:none;width:120px;border-right:1px solid var(--line)}
+.ev-name{height:54px;display:flex;align-items:center;gap:6px;padding:0 8px;font-size:12.5px;font-weight:600;border-bottom:1px solid #ffffff0d;white-space:nowrap;overflow:hidden}
+.ev-name.ruler-pad{height:24px}
+.ev-scroll{overflow-x:auto;flex:1}
+.ev-track{position:relative}
+.ev-ruler{position:relative;height:24px;border-bottom:1px solid var(--line)}
+.ev-ruler .tick{position:absolute;top:4px;font-size:10.5px;color:var(--mut);border-left:1px solid #ffffff22;padding-left:3px;height:20px}
+.ev-lanes{position:relative}
+.ev-lane{position:relative;height:54px;border-bottom:1px solid #ffffff0d;background:linear-gradient(90deg,color-mix(in srgb,var(--sl) 6%,transparent),transparent)}
+.ev-block{position:absolute;top:7px;height:40px;border-radius:6px;background:color-mix(in srgb,var(--sl) 70%,#000);border:1px solid var(--sl);color:#fff;font-size:11.5px;overflow:hidden;cursor:pointer;display:flex;gap:5px;align-items:center;padding:0 5px;box-sizing:border-box;white-space:nowrap}
+.ev-block .n{font-weight:800}.ev-block .t{overflow:hidden;text-overflow:ellipsis;opacity:.9}
+.ev-block.untimed{border-style:dashed;background:color-mix(in srgb,var(--sl) 40%,#000)}
+.ev-block.sel{outline:2px solid #fff;outline-offset:1px;z-index:2}
+.ev-block:hover{filter:brightness(1.2)}
+.ev-gap{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,#ff4d4d33 0 6px,transparent 6px 12px);border-left:1px solid #ff6b6b;border-right:1px solid #ff6b6b;pointer-events:auto;z-index:1}
+.ev-gap span{position:absolute;bottom:2px;left:2px;font-size:10px;color:#ff8a8a;white-space:nowrap}
+.ev-switch{position:absolute;top:0;bottom:0;width:0;border-left:1px dotted #ffffff55;pointer-events:none}
+.ev-hint{font-size:12.5px;margin:8px 2px}
+.sl-row .fld{flex:1;min-width:120px}.sl-row select{width:100%}
+.seg button{padding:5px 10px}

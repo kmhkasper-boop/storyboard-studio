@@ -247,6 +247,7 @@
     const has = !!doc;
     $('#empty').hidden = has; $('#toolbar').style.display = has ? '' : 'none'; $('#sidebar').style.display = has ? '' : 'none';
     $('#board').hidden = !has || view !== 'board'; $('#script').hidden = !has || view !== 'script';
+    $('#storyView').hidden = !has || view !== 'story'; $('#editView').hidden = !has || view !== 'edit';
     $$('#topbar > button, #topbar .seg, #docTitle, #runtime').forEach(n => { if (n.id !== 'btnMenu') n.style.visibility = has ? '' : 'hidden'; });
     renderModeBadge();
     if (!has) { $('#editor').hidden = true; updateSaveState(); return; }
@@ -254,7 +255,10 @@
     const [aw, ah] = doc.aspect.split(':'); document.documentElement.style.setProperty('--aspect', aw + '/' + ah);
     if (document.activeElement !== $('#docTitle')) $('#docTitle').value = doc.title;
     renderFilters(); renderHeader(); renderSidebar(); renderVariantBar();
-    if (view === 'board') renderBoard(); else renderScript();
+    if (view !== 'board') { sortables.splice(0).forEach(x => x.destroy()); $('#board').innerHTML = ''; } // one view in the DOM at a time (same page objects)
+    if (view !== 'story' && storySortable) { storySortable.destroy(); storySortable = null; $('#storyView').innerHTML = ''; }
+    if (view !== 'edit') $('#editView').innerHTML = '';
+    if (view === 'board') renderBoard(); else if (view === 'story') renderStory(); else if (view === 'edit') renderEdit(); else renderScript();
     renderEditor(); updateSaveState();
   }
   function renderModeBadge() {
@@ -267,7 +271,7 @@
     b.title = local.kind === 'files' ? 'This browser cannot write into folders. Save downloads the storyboard file; put it back in the folder.' : '';
   }
   function renderHeader() {
-    const tl = S.timeline(doc); const ap = activePages(); const n = ap.filter(p => p.status !== 'cut').length; const nc = ap.length - n; const na = allPages().length - ap.length;
+    const tl = S.timeline(doc); const ap = activePages(); const n = ap.filter(p => p.status !== 'cut' && !p.pool).length; const nc = ap.length - n; const na = allPages().length - ap.length;
     $('#runtime').textContent = n + ' pages · ' + S.fmtTime(tl.screen);
     $('#runtime').title = 'Total screen time of the active cut' + (nc ? '. ' + nc + ' page(s) with status "cut" are not counted (their song time shows as a gap)' : '') + (na ? '. ' + na + ' page(s) in inactive alternatives are not counted' : '');
     const sp = $('#songSpan');
@@ -286,11 +290,14 @@
     if (fs.options.length === 1) S.STATUSES.forEach(s => fs.append(el('option', { value: s.id }, s.label)));
     const cur = fc.value; fc.innerHTML = '<option value="">All characters</option>';
     doc.characters.forEach(c => fc.append(el('option', { value: c.id }, c.name))); fc.value = cur;
+    const fl = $('#fStory'); const curS = fl.value; fl.innerHTML = '<option value="*">All storylines</option>';
+    S.storylineList(doc).forEach(x => fl.append(el('option', { value: x.id }, x.name))); fl.value = [...fl.options].some(o => o.value === curS) ? curS : '*'; fl.hidden = !doc.storylines.length;
   }
   function pageMatches(p) {
     const q = $('#search').value.trim().toLowerCase(), st = $('#fStatus').value, ch = $('#fChar').value;
     if (st && p.status !== st) return false;
     if (ch && !p.characters.some(r => r.charId === ch)) return false;
+    const sl = $('#fStory').value; if (doc.storylines.length && sl !== '*' && S.storylineOf(doc, p) !== sl) return false;
     if (q) { const hay = [p.title, p.code, p.lyrics, p.description, p.camera, p.mood, p.notes, p.imagePrompt, p.videoPrompt, p.negativePrompt, p.flag].join(' ').toLowerCase(); if (!hay.includes(q)) return false; }
     return true;
   }
@@ -298,7 +305,7 @@
     const ol = $('#sceneList'); ol.innerHTML = '';
     for (const it of S.sceneItems(doc)) {
       const act = it.scenes.find(x => x.active !== false) || it.scenes[0];
-      const t = act.pages.reduce((a, p) => a + (p.status === 'cut' || p.active === false ? 0 : dur(p)), 0);
+      const t = act.pages.reduce((a, p) => a + (p.status === 'cut' || p.pool || p.active === false ? 0 : dur(p)), 0);
       const alt = it.scenes.length > 1;
       ol.append(el('li', { dataset: { id: act.id, ids: it.scenes.map(x => x.id).join(',') }, class: alt ? 'slot' : '', title: alt ? 'Alternatives: ' + it.scenes.map(x => (x.altLabel || x.title) + (x.active !== false ? ' (active)' : '')).join(' / ') : '', onclick: () => { const n = document.getElementById('scene-' + act.id); if (n) n.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
         el('span', { class: 'sw', style: { background: act.color } }), el('span', { class: 'nm' }, (alt ? '⇄ ' : '') + act.title), el('span', { class: 'ct' }, (alt ? it.scenes.length + ' alts · ' : '') + act.pages.filter(p => p.active !== false).length + ' · ' + S.fmtTime(t))));
@@ -327,10 +334,11 @@
       gi.overlap ? el('span', { class: 'gapchip', title: 'Overlaps the previous linear page' }, '⚠ overlap ' + (Math.round(gi.overlap.seconds * 10) / 10) + 's') : null
     ].filter(Boolean);
     const tc = [p.start, p.end].filter(Boolean).join('–');
-    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out') + (p.role ? ' r-' + p.role : '') + (p.active === false ? ' alt-off' : ''), dataset: { id: p.id }, tabindex: 0 },
+    const slx = doc.storylines.length ? S.storylineById(doc, S.storylineOf(doc, p)) : null;
+    const card = el('div', { class: 'card' + (p.id === selected ? ' sel' : '') + (pageMatches(p) ? '' : ' filtered-out') + (p.role ? ' r-' + p.role : '') + (p.active === false ? ' alt-off' : ''), dataset: { id: p.id, storyline: slx ? slx.id : '' }, tabindex: 0, style: slx ? { '--sl': slx.color } : null },
       thumb,
       el('div', { class: 'body' },
-        el('div', { class: 'row1' }, el('span', { class: 'st st-' + p.status, title: p.status }), tc ? el('span', { class: 'tc' }, tc) : null, el('span', { class: 'dur' }, (Math.round(dur(p) * 10) / 10) + 's')),
+        el('div', { class: 'row1' }, el('span', { class: 'st st-' + p.status, title: p.status }), slx ? el('span', { class: 'sl-chip', title: 'Storyline: ' + slx.name + (p.storyOrder ? ' · story position ' + p.storyOrder : '') }, slx.name + (p.storyOrder ? ' ' + p.storyOrder : '')) : null, p.pool ? el('span', { class: 'chip pool', title: 'In the pool: not meant for the edit (yet)' }, 'pool') : null, tc ? el('span', { class: 'tc' }, tc) : null, el('span', { class: 'dur' }, (Math.round(dur(p) * 10) / 10) + 's')),
         p.title ? el('div', { class: 'ttl' }, p.title) : null,
         lyr(p) ? el('div', { class: 'lyr' + (p.lyrics ? '' : ' auto'), title: p.lyrics ? '' : 'From the song lyrics' }, lyr(p)) : null,
         p.description ? el('div', { class: 'desc' }, p.description) : null,
@@ -366,7 +374,7 @@
         grid.append(g);
       }
       grid.append(el('button', { class: 'add-card', title: 'Add a page to this scene', onclick: () => addPage(s.id) }, '+ Page'));
-      const t = s.pages.reduce((a, p) => a + (p.status === 'cut' || p.active === false ? 0 : dur(p)), 0);
+      const t = s.pages.reduce((a, p) => a + (p.status === 'cut' || p.pool || p.active === false ? 0 : dur(p)), 0);
       const title = el('input', { class: 'sc-title', value: s.title, 'aria-label': 'Scene title' });
       title.addEventListener('input', () => mutate(d => { d.scenes.find(x => x.id === s.id).title = title.value; }, 'scene-title:' + s.id, { render: false }));
       title.addEventListener('change', () => renderSidebar());
@@ -468,10 +476,114 @@
   }
 
   // ---------- editor ----------
+
+  // ---------- v4: storylines ----------
+  let storyTab = null, storySortable = null;
+  function storylineRow(p) {
+    const sel = el('select', { 'data-field': 'storyline', title: 'Which storyline this page belongs to' }, S.storylineList(doc).filter(x => !x.implicit || !doc.storylines.length || x.id === '').map(x => el('option', { value: x.id }, x.implicit && doc.storylines.length ? '— none —' : x.name)));
+    sel.value = S.storylineOf(doc, p);
+    sel.addEventListener('change', () => mutate(d => { S.setPageStoryline(d, p.id, sel.value); }));
+    const pool = el('input', { type: 'checkbox', class: 'f-pool' }); pool.checked = !!p.pool;
+    pool.onchange = () => mutate(() => { findPage(p.id).page.pool = pool.checked; });
+    const u = S.usageOf(doc, p.id);
+    return el('div', { class: 'row sl-row' },
+      el('div', { class: 'fld' }, el('label', null, 'Storyline ', el('button', { class: 'copy-btn', title: 'Add, rename or recolour storylines', onclick: (e) => { e.preventDefault(); storylineManager(); } }, '✎ storylines')), sel),
+      el('div', { class: 'fld' }, el('label', null, 'Story position'), el('div', { class: 'muted', style: { padding: '6px 0' } }, (p.storyOrder || '—') + (doc.storylines.length || p.storyOrder ? '' : ''))),
+      el('label', { class: 'pool-row', title: 'Pool: keep this page on the board but out of the edit (runtime, Play, edit view)' }, pool, ' Pool (not in the edit)'),
+      el('div', { class: 'muted use-state', style: { fontSize: '12px', alignSelf: 'center' } }, u.used ? '✓ used in the edit' : '○ not in the edit: ' + u.reason));
+  }
+  function storylineManager() {
+    const box = el('div', null, el('h2', null, 'Storylines'),
+      el('p', { class: 'muted' }, 'A video can weave several storylines (e.g. Comic and Real world). Each page belongs to one; the Story tab orders a storyline as a story, the Edit tab shows them woven on the song timeline.'));
+    const list = el('div', { class: 'slm-list' });
+    const draw = () => {
+      list.innerHTML = '';
+      doc.storylines.forEach((x, i) => {
+        const nm = el('input', { value: x.name, 'aria-label': 'Storyline name', class: 'slm-name' });
+        nm.addEventListener('change', () => mutate(d => { d.storylines[i].name = nm.value || d.storylines[i].id; }));
+        const co = el('input', { type: 'color', value: x.color, title: 'Colour' }); co.addEventListener('change', () => mutate(d => { d.storylines[i].color = co.value; }));
+        const n = S.storyPages(doc, x.id).length;
+        list.append(el('div', { class: 'slm-row' }, co, nm, el('code', { class: 'muted' }, x.id), el('span', { class: 'muted' }, n + ' pages'),
+          el('button', { class: 'danger', title: 'Delete the storyline (its pages stay, unassigned)', onclick: () => { mutate(d => { S.removeStoryline(d, x.id); }); draw(); } }, '🗑')));
+      });
+      if (!doc.storylines.length) list.append(el('p', { class: 'muted' }, 'No storylines yet: every page is in one implicit story.'));
+    };
+    draw();
+    const add = el('input', { placeholder: 'New storyline name, e.g. Real world', class: 'slm-new' });
+    const addBtn = el('button', { class: 'primary slm-add', onclick: () => { const v = add.value.trim(); if (!v) return; let id; mutate(d => { id = S.addStoryline(d, v); }); add.value = ''; storyTab = id; draw(); } }, '+ Add');
+    add.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click(); });
+    box.append(list, el('div', { class: 'row' }, add, addBtn), el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Done')));
+    modal(box);
+  }
+  /** Story view: one tab per storyline, its pages in story order (drag to reorder), then its pages not used in the edit. */
+  function renderStory() {
+    const box = $('#storyView'); if (storySortable) { storySortable.destroy(); storySortable = null; } box.innerHTML = '';
+    const sls = S.storylineList(doc); if (!sls.some(x => x.id === storyTab)) storyTab = sls[0].id;
+    const tabs = el('div', { class: 'sv-tabs', role: 'tablist' }, sls.map(x => el('button', { class: 'sv-tab' + (x.id === storyTab ? ' on' : ''), dataset: { id: x.id }, style: { '--sl': x.color }, onclick: () => { storyTab = x.id; renderStory(); } },
+      el('span', { class: 'sw' }), x.name, el('span', { class: 'ct' }, ' ' + S.storyPages(doc, x.id).length))),
+      el('button', { class: 'sv-manage', title: 'Add, rename or recolour storylines', onclick: storylineManager }, '✎ Storylines'));
+    const pages = S.storyPages(doc, storyTab); const labels = S.pageLabels(doc); const cur = S.storylineById(doc, storyTab);
+    const grid = el('div', { class: 'grid sv-grid', style: { '--sl': cur.color } });
+    pages.forEach((p, i) => { const c = cardEl(p, labels.get(p.id)); c.prepend(el('span', { class: 'sv-pos', title: 'Story position' }, String(i + 1))); const u = S.usageOf(doc, p.id); if (!u.used) c.classList.add('sv-unused'); grid.append(c); });
+    if (!pages.length) grid.append(el('p', { class: 'muted' }, 'No pages in this storyline yet. Pick the storyline in a page\u2019s drawer (Page tab).'));
+    const unused = S.unusedPages(doc, storyTab);
+    const cov = el('div', { class: 'sv-unused-list' }, el('h3', null, 'Not in the edit yet (' + unused.length + ')'),
+      unused.length ? el('ul', null, unused.map(x => el('li', { dataset: { id: x.page.id } },
+        el('a', { href: '#', onclick: (e) => { e.preventDefault(); select(x.page.id); } }, (labels.get(x.page.id) || '?') + (x.page.title ? ' · ' + x.page.title : '') + (x.page.code ? ' (' + x.page.code + ')' : '')),
+        el('span', { class: 'chip' }, x.reason),
+        x.reason === 'pool' ? el('button', { class: 'copy-btn', title: 'Take it out of the pool so it counts in the edit', onclick: () => mutate(() => { findPage(x.page.id).page.pool = false; }) }, 'use in edit') : null))) : el('p', { class: 'muted' }, 'Every page of this storyline is in the edit.'));
+    box.append(el('div', { class: 'sv-head' }, tabs),
+      el('p', { class: 'muted sv-help' }, 'Story order of “' + cur.name + '”: drag to reorder the story. This does not change the edit (board order and song times).'),
+      grid, cov);
+    storySortable = Sortable.create(grid, { draggable: '.card', animation: 150, delayOnTouchOnly: true, delay: 180, onEnd: () => {
+      const ids = $$('.sv-grid > .card').map(n => n.dataset.id); mutate(d => { S.setStoryOrder(d, storyTab, ids); }); } });
+  }
+  /** Edit view: all storylines woven on the song timeline, one lane per storyline. */
+  function renderEdit() {
+    const box = $('#editView'); box.innerHTML = '';
+    const tl = S.editTimeline(doc); const hidden = new Set(prefs.hiddenLanes || []); const labels = S.pageLabels(doc);
+    const avail = Math.max(300, (box.clientWidth || $('#main').clientWidth || 900) - 140); const pps = prefs.evZoom || Math.max(6, Math.min(80, Math.floor(avail / Math.max(10, tl.end - Math.floor(tl.start / 5) * 5 + 2)))); const t0 = Math.floor(tl.start / 5) * 5; const t1 = Math.max(t0 + 10, Math.ceil(tl.end / 5) * 5); const W = (t1 - t0) * pps;
+    const x = (t) => (t - t0) * pps;
+    const vsel = el('select', { id: 'evVariant', title: 'Variant: the edit view follows it' });
+    const cur = doc.variants.find(v => v.id === doc.activeVariant); const match = cur && S.variantMatches(doc, cur);
+    vsel.append(el('option', { value: '' }, cur && !match ? '✎ ' + cur.name + ' (changed)' : '— current choices —')); doc.variants.forEach(v => vsel.append(el('option', { value: v.id }, v.name))); vsel.value = match ? cur.id : '';
+    vsel.onchange = () => { if (vsel.value) applyVariantUI(vsel.value); };
+    const zoom = el('input', { type: 'range', min: 6, max: 80, step: 2, value: pps, id: 'evZoom', title: 'Zoom (pixels per second)' });
+    zoom.oninput = () => { prefs.evZoom = +zoom.value; savePrefs(); renderEdit(); };
+    const toggles = tl.lanes.filter(l => l.count || !l.implicit).map(l => el('button', { class: 'ev-toggle' + (hidden.has(l.id) ? ' off' : ''), dataset: { id: l.id }, style: { '--sl': l.color }, title: (hidden.has(l.id) ? 'Show' : 'Hide') + ' this lane', onclick: () => { hidden.has(l.id) ? hidden.delete(l.id) : hidden.add(l.id); prefs.hiddenLanes = [...hidden]; savePrefs(); renderEdit(); } },
+      el('span', { class: 'sw' }), l.name + ' · ' + l.count + ' · ' + S.fmtTime(l.seconds)));
+    const head = el('div', { class: 'ev-head' }, el('span', { class: 'muted' }, 'Variant'), vsel, el('span', { class: 'ev-toggles' }, toggles), el('div', { class: 'spacer' }), el('label', { class: 'zoom' }, '🔍', zoom),
+      el('span', { class: 'muted ev-sum' }, tl.blocks.length + ' shots · ' + tl.switches.length + ' storyline switches · ' + (tl.gaps.length ? '⚠ ' + tl.gaps.length + ' song gap' + (tl.gaps.length > 1 ? 's' : '') : 'no song gaps')));
+    const ruler = el('div', { class: 'ev-ruler', style: { width: W + 'px' } });
+    for (let t = t0; t <= t1; t += (pps < 12 ? 10 : 5)) ruler.append(el('span', { class: 'tick', style: { left: x(t) + 'px' } }, S.fmtTime(t)));
+    const lanes = tl.lanes.filter(l => (l.count || !l.implicit) && !hidden.has(l.id));
+    const laneEls = lanes.map(l => {
+      const lane = el('div', { class: 'ev-lane', dataset: { id: l.id }, style: { width: W + 'px', '--sl': l.color } });
+      for (const b of tl.blocks.filter(b => b.storyline === l.id)) {
+        const p = b.page; const w = Math.max(3, (b.end - b.start) * pps);
+        const blk = el('div', { class: 'ev-block' + (p.id === selected ? ' sel' : '') + (b.timed ? '' : ' untimed') + (p.role && p.role !== 'linear' ? ' r-' + p.role : ''), dataset: { id: p.id }, tabindex: 0, style: { left: x(b.start) + 'px', width: w + 'px' },
+          title: 'Page ' + labels.get(p.id) + (p.title ? ' · ' + p.title : '') + '\n' + S.fmtTime(b.start, true) + '–' + S.fmtTime(b.end, true) + (b.timed ? '' : ' (no song time: placed after the previous shot by duration)') + '\nClick = select · Space = preview · double-click = drawer' },
+          el('span', { class: 'n' }, labels.get(p.id)), w > 40 ? el('span', { class: 't' }, p.title || p.code || '') : null);
+        blk.addEventListener('click', () => select(p.id));
+        blk.addEventListener('dblclick', () => { drawer = true; select(p.id); renderEditor(); });
+        lane.append(blk);
+      }
+      return lane;
+    });
+    const gapEls = tl.gaps.map(g => el('div', { class: 'ev-gap', title: 'Song gap: no storyline has a shot ' + S.fmtTime(g.from, true) + '–' + S.fmtTime(g.to, true) + ' (' + g.seconds + ' s)', style: { left: x(g.from) + 'px', width: Math.max(2, (g.to - g.from) * pps) + 'px' } }, el('span', null, 'gap ' + g.seconds + 's')));
+    const swEls = tl.switches.map(s => el('div', { class: 'ev-switch', style: { left: x(s.at) + 'px' }, title: 'Storyline switch at ' + S.fmtTime(s.at, true) }));
+    const track = el('div', { class: 'ev-track', style: { width: W + 'px' } }, ruler, el('div', { class: 'ev-lanes' }, laneEls, gapEls, swEls));
+    const names = el('div', { class: 'ev-names' }, el('div', { class: 'ev-name ruler-pad' }), lanes.map(l => el('div', { class: 'ev-name', style: { '--sl': l.color } }, el('span', { class: 'sw' }), l.name)));
+    box.append(...[head, el('div', { class: 'ev-body' }, names, el('div', { class: 'ev-scroll' }, track)),
+      !doc.storylines.length ? el('p', { class: 'muted ev-hint' }, 'This board has no storylines yet, so everything is one lane. Add storylines with ✎ Storylines (Story tab) and pick one per page.') : null,
+      el('p', { class: 'muted ev-hint' }, 'Blocks sit at their song time (dashed = no song time, placed by duration after the previous shot). The edit order is still the board order: reorder there. Hidden lanes: ' + (hidden.size ? [...hidden].map(id => S.storylineById(doc, id).name).join(', ') : 'none') + '.')].filter(Boolean));
+  }
+
   function select(id) {
     selected = id; if (id) selectScene(null);
     $$('.card.sel').forEach(c => c.classList.remove('sel'));
     const c = id && document.querySelector('.card[data-id="' + CSS.escape(id) + '"]'); if (c) c.classList.add('sel');
+    $$('.ev-block.sel').forEach(b => b.classList.remove('sel')); const eb = id && document.querySelector('.ev-block[data-id="' + CSS.escape(id) + '"]'); if (eb) eb.classList.add('sel');
     renderEditor();
   }
   function renderEditor() {
@@ -505,6 +617,7 @@
       page: () => [
         editorWarnings(p), altStrip(p, scene),
         el('div', { class: 'row' }, el('div', { class: 'fld' }, el('label', null, 'Status'), statusSel), el('div', { class: 'fld' }, el('label', null, 'Scene'), sceneSel)),
+        storylineRow(p),
         p.status === 'cut' ? el('label', { class: 'bridged-row', title: 'The real edit bridges this page\'s song time (e.g. the neighbours were extended), so the gap check treats it as covered.' }, (() => { const cb = el('input', { type: 'checkbox', class: 'f-bridged' }); cb.checked = !!p.bridged; cb.onchange = () => mutate(() => { findPage(p.id).page.bridged = cb.checked; }); return cb; })(), ' Bridged in the edit (no gap for its song time)') : null,
         el('div', { class: 'row' }, roleSel(p), speedField(p), retimeSel(p)),
         field('effect', 'Effect', { placeholder: 'e.g. flicker, strobe' }),
@@ -1519,7 +1632,7 @@
     const n = scenes.reduce((a, s) => a + s.pages.length, 0);
     if (!n) return toast('No "PAGE nn" blocks found');
     if (!doc) setDoc({ title: (r.text.match(/^#\s*(.+)$/m) || [0, 'Imported storyboard'])[1].replace(/\\/g, '').trim(), scenes: [] });
-    mutate(d => { d.scenes = d.scenes.filter(s => s.pages.length).concat(scenes); });
+    mutate(d => { d.scenes = d.scenes.filter(s => s.pages.length).concat(scenes); for (const x of scenes.storylines || []) if (!d.storylines.some(y => y.id === x.id || y.name.toLowerCase() === x.name.toLowerCase())) d.storylines.push(x); else { const y = d.storylines.find(q => q.name.toLowerCase() === x.name.toLowerCase()); if (y && y.id !== x.id) for (const s of scenes) for (const p of s.pages) if (p.storyline === x.id) p.storyline = y.id; } });
     toast('Imported ' + n + ' pages in ' + scenes.length + ' scene(s)');
   }
   function downloadBlob(text, type, name) {
@@ -1614,7 +1727,7 @@
   const pl = { seq: [], i: 0, t0: 0, elapsed: 0, playing: false, raf: 0, total: 0, starts: [], token: 0, segs: [], seg: -1, lastSeek: 0 };
   async function play(fromId) {
     if (!doc) return;
-    pl.seq = activePages().filter(p => p.status !== 'cut');
+    pl.seq = activePages().filter(p => p.status !== 'cut' && !p.pool);
     if (!pl.seq.length) return toast('No pages to play');
     pl.starts = []; let t = 0; for (const p of pl.seq) { pl.starts.push(t); t += dur(p); } pl.total = t;
     pl.i = Math.max(0, fromId ? pl.seq.findIndex(p => p.id === fromId) : 0);
@@ -1923,7 +2036,7 @@
   $('#docTitle').addEventListener('input', () => mutate(d => { d.title = $('#docTitle').value; }, 'doc-title', { render: false }));
   $$('.seg button').forEach(b => b.onclick = () => { view = b.dataset.view; $$('.seg button').forEach(x => x.classList.toggle('on', x === b)); render(); });
   const applyFilter = () => { $$('.card').forEach(c => c.classList.toggle('filtered-out', !pageMatches(findPage(c.dataset.id).page))); $$('#script .sp').forEach(c => c.classList.toggle('filtered-out', !pageMatches(findPage(c.dataset.id).page))); };
-  $('#search').addEventListener('input', applyFilter); $('#fStatus').addEventListener('change', applyFilter); $('#fChar').addEventListener('change', applyFilter);
+  $('#search').addEventListener('input', applyFilter); $('#fStatus').addEventListener('change', applyFilter); $('#fChar').addEventListener('change', applyFilter); $('#fStory').addEventListener('change', applyFilter);
   $('#zoom').value = prefs.zoom; $('#zoom').oninput = () => { prefs.zoom = +$('#zoom').value; savePrefs(); document.documentElement.style.setProperty('--card', prefs.zoom + 'px'); };
   $('#showText').checked = prefs.showText; $('#showText').onchange = () => { prefs.showText = $('#showText').checked; savePrefs(); $('#board').classList.toggle('hide-text', !prefs.showText); };
   $('#fileDir').addEventListener('change', (e) => onDirInput(Array.from(e.target.files)));
@@ -1985,6 +2098,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { qlOpen, qlClose, get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
+  window.__sb = { qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
   init();
 })();

@@ -1,4 +1,4 @@
-# Storyboard file format v3.3 (for Mirrage)
+# Storyboard file format v4 (for Mirrage)
 
 Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive project folder of a video. Lucas edits it in the app; you (Mirrage) read and edit the same file with the Drive connector. There is no database and no hidden state: **the file is the storyboard.**
 
@@ -6,6 +6,20 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **What's new in v4** (`"version": 4`; every new field is optional):
+> - top-level `storylines`: `[{ "id", "name", "color" }]`, the storylines the video weaves together (e.g. Bleeding Page: Comic and Real world; Zeppelin Day: A to E). `colour` is read as an alias of `color`.
+> - page `storyline`: the id of the one storyline the page belongs to.
+> - page `storyOrder`: the page's position **in its storyline's story** (1, 2, 3 …). It is separate from the edit order.
+> - page `pool: true`: the page stays on the board but is **not meant for the edit (yet)**. It is left out of the runtime, Play, the exports and the edit view.
+> - The **edit order is unchanged**: it is still the position in `scenes[].pages[]` plus the song times.
+> - The app has a **Story** tab (one tab per storyline, in story order, drag to reorder) and an **Edit** tab (all storylines woven on the song timeline, one lane each, with song gaps and storyline switches).
+>
+> **Migrating v3 → v4:** nothing is required. A v3 file loads unchanged and behaves as before: it has no `storylines`, so every page is in one implicit storyline, and every `id`, page number and variant keeps working. The app writes `"version": 4` on its next save, and it writes no storyline fields until someone adds storylines.
+> - **To tag a board** (e.g. Bleeding Page): add `storylines`, for example `[{ "id": "comic", "name": "Comic", "color": "#ff6b6b" }, { "id": "real", "name": "Real world", "color": "#4dabf7" }]`. Then set `storyline` on each page (`p_bp_*` → `comic`, `p_bp2_*` → `real`).
+> - Optionally set `storyOrder` (1…n per storyline). Pages without it follow in board order.
+> - A page whose `storyline` id is not in `storylines` makes the app create that storyline, named after the id.
+> - **Older apps (v3.x) drop unknown fields when they save**, so open a v4 board only with the v4 app (the online app updates itself).
+>
 > **What's new in v3.3** (no file changes, still `"version": 3`): an import event with **most of its duration inside a `cut`/bridged page** is now a "hole event". It always becomes a nearest-page suggestion (that `reject` can decline), even when a frame of it touches a real page. The app also gained the Space preview (see README); it doesn't affect the file.
 >
 > **What's new in v3.2** (no new fields, still `"version": 3`):
@@ -55,8 +69,10 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 ```
 storyboard
 ├─ header (format, version, revision, title, audio, characters, songLyrics …)
-└─ scenes[]            ← ordered; the order IS the running order
+├─ storylines[]       ← v4: the storylines woven together (optional)
+└─ scenes[]            ← ordered; the order IS the running order (the edit)
    └─ pages[]          ← ordered; one page = one storyboard frame / shot
+                         v4: each page names its storyline + its place in that story (storyOrder)
 ```
 
 Page numbers are **not stored**. "Page 7" means the 7th **active** page counting through all scenes in order (v3: inactive alternatives are skipped and shown as `7·alt`). To keep a stable reference, use the page `id` (it never changes) or the optional `code` field.
@@ -66,7 +82,7 @@ Page numbers are **not stored**. "Page 7" means the 7th **active** page counting
 | field | type | meaning |
 |---|---|---|
 | `format` | `"storyboard-studio"` | always this value |
-| `version` | `3` | schema version (v1 and v2 files load fine; the app writes 3) |
+| `version` | `4` | schema version (v1–v3 files load fine; the app writes 4) |
 | `revision` | integer | **save counter.** Every save adds 1 (see *Rules: revision*). Missing = 0. |
 | `title`, `project` | string | names |
 | `updated` | ISO date-time | when it was saved. Both `"2026-11-16T18:47:54Z"` and `"2026-11-16T19:47:54+01:00"` are valid; the app writes local time with an offset. |
@@ -82,6 +98,7 @@ Page numbers are **not stored**. "Page 7" means the 7th **active** page counting
 | `notes` | string | general notes |
 | `variants` | array | **v3** named sets of active alternatives: `[{ "id", "name", "slots": { slotId: sceneId }, "pages": { rootPageId: pageId } }]`. See *Alternatives and variants*. |
 | `activeVariant` | string | **v3** id of the variant last applied (an unknown id is cleared) |
+| `storylines` | array | **v4** `[{ "id": "comic", "name": "Comic", "color": "#ff6b6b", "notes": "" }]`. Ids are unique (the app also accepts `colour`). Missing or empty = one implicit storyline. See *Storylines (v4)*. |
 | `scenes` | array | see below |
 
 ## Scene
@@ -123,6 +140,9 @@ Page numbers are **not stored**. "Page 7" means the 7th **active** page counting
 | `altOf` | string | **v3** id of the page this one is an **alternative shot** of (always the root page, in the same scene). |
 | `altLabel` | string | **v3** tab label, e.g. `"A"`, `"B close-up"` |
 | `active` | boolean | **v3** exactly one page of a root + its alternatives is active. Missing = `true`; written only when `false`. |
+| `storyline` | string | **v4** id of the page's storyline (one per page). Missing = no storyline (an implicit "Unassigned" lane when the board has storylines). |
+| `storyOrder` | number | **v4** position inside its storyline's **story** (1 = first). Independent of the edit order. Missing = after the numbered pages, in board order. |
+| `pool` | boolean | **v4** `true` = keep on the board, but not in the edit (no runtime, no Play, no exports, no edit-view block). Written only when `true`. |
 | `negativePrompt` + `negativeTool` | string | **v2** |
 | `notes`, `flag` | string | notes, plus something Lucas must OK (shown in red) |
 | `image`, `video` | media object | the frame and the clip. When a take is picked, it is written here. |
@@ -262,6 +282,41 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
 
 **Drag and drop.** Moving a slot moves all its alternatives, and moving a page moves its whole alternative stack.
 
+## Storylines (v4)
+
+A video can weave several storylines. Each page belongs to **one** storyline and has **two orders**:
+
+| order | where it lives | who uses it |
+|---|---|---|
+| **edit order** | the page's position in `scenes[].pages[]` + `start`/`end` song times (unchanged since v1) | Play, runtime, exports, the edit |
+| **story order** | page `storyOrder` within its `storyline` | the Story tab (each storyline read as a story) |
+
+- **Same pages everywhere.** Pages are never copied per view; the Board, Story and Edit tabs show the same page objects.
+- **Used in the edit.** A page counts as used when it is in the active variant (its scene alternative and page alternative are active), its status is not `cut`, and it is not `pool`.
+  - Every page has a position in the edit, so `pool: true` is how you park a page you don't want in the edit (yet).
+  - Each Story tab lists its storyline's pages that are not used, with the reason: `pool`, `cut`, `inactive alternative` or `inactive scene alternative`.
+- **Edit view.** There is one lane per storyline, and each used page is a block from `start` to `end`.
+  - A page without song times is placed right after the previous block, using its duration (drawn dashed).
+  - **Song gaps** (song time where no storyline has a shot) are hatched across all lanes. A bridged cut page covers its time.
+  - **Storyline switches** are the points where the next shot in song time belongs to another storyline.
+  - The view follows the current variant and has its own variant picker. Lanes can be hidden with one click.
+- **Without storylines** (every v3 board) there is one implicit storyline, and the Story and Edit tabs show a single lane.
+
+Example:
+
+```json
+"storylines": [
+  { "id": "comic", "name": "Comic", "color": "#ff6b6b" },
+  { "id": "real", "name": "Real world", "color": "#4dabf7" }
+],
+…
+{ "id": "p_bp_07", "storyline": "comic", "storyOrder": 3, "start": "0:24", "end": "0:28", … },
+{ "id": "p_bp2_02", "storyline": "real", "storyOrder": 1, "start": "0:28", "end": "0:31", … },
+{ "id": "p_bp2_09", "storyline": "real", "storyOrder": 2, "pool": true, … }
+```
+
+**Markdown.** The export writes a `**Storylines:** Comic (#ff6b6b), Real world (#4dabf7)` line under the title, and adds `Storyline: Comic · Story order: 3 · Pool: yes` to each page's meta line. The import reads those lines, plus a plain `Storyline: Comic` field line in your text. Names are matched to existing storylines; new names become new storylines.
+
 ## Importing a Resolve edit (v3)
 
 ☰ → **Import cut list (CSV / EDL)…**, or **Cuts tab → Import cuts…**, takes a CMX3600 EDL or a CSV and **shows a preview before anything changes**. One undo reverts it.
@@ -311,6 +366,7 @@ A take is a media object plus `tool`, `note` and `pick`. **The picked take is th
    - characters with looks: `Characters: Saisha [night-tram]`
 
    The generation log, `songLyrics` and the cast definitions are exported for reading only; they come back through the JSON, not the Markdown. **v3:** `**Gen seconds:** 6` round-trips. Markdown export contains only active alternatives (with a note saying how many pages it left out), so edit alternatives in the JSON.
+10. **v4 storylines:** don't move pages between scenes to change the story; set `storyline` / `storyOrder` instead (the scene order is the edit). Keep storyline ids stable, and don't delete a storyline that pages still use (the app would unassign them).
 9. **v3 alternatives:** never delete an inactive alternative unless Lucas asks. To switch, flip `active` (one per slot or group). Keep slot members next to each other and alternatives right after their root page. Keep `variants` entries pointing at existing ids. When you can't keep the v3 fields, leave the file alone and add a comment instead.
 
 ## Song time checks (what the ⚠ means)

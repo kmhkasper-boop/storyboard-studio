@@ -1,6 +1,6 @@
 {
   "format": "storyboard-studio",
-  "version": 3,
+  "version": 4,
   "revision": 2,
   "title": "Sample – Paper Moon",
   "project": "Storyboard Studio sample",
@@ -34,6 +34,18 @@
       "pages": {
         "p_09": "p_09b"
       }
+    }
+  ],
+  "storylines": [
+    {
+      "id": "sl_city",
+      "name": "City",
+      "color": "#4dabf7"
+    },
+    {
+      "id": "sl_paper",
+      "name": "Paper world",
+      "color": "#ffb84d"
     }
   ],
   "characters": [
@@ -176,7 +188,9 @@
             "path": "images/page-01.jpg"
           },
           "lyrics": "(intro synths)",
-          "mood": "quiet, hopeful"
+          "mood": "quiet, hopeful",
+          "storyline": "sl_city",
+          "storyOrder": 1
         },
         {
           "id": "p_02",
@@ -189,7 +203,9 @@
           "image": {
             "path": "images/page-02.jpg"
           },
-          "lyrics": "Paper moon above the wire"
+          "lyrics": "Paper moon above the wire",
+          "storyline": "sl_city",
+          "storyOrder": 2
         },
         {
           "id": "p_03",
@@ -274,7 +290,9 @@
               "quote": "v2 is the one"
             }
           ],
-          "genSeconds": 4
+          "genSeconds": 4,
+          "storyline": "sl_paper",
+          "storyOrder": 2
         }
       ]
     },
@@ -302,7 +320,9 @@
             "path": "images/page-04.jpg"
           },
           "flag": "drink on stage – Lucas to OK",
-          "lyrics": "Every light is on for you"
+          "lyrics": "Every light is on for you",
+          "storyline": "sl_paper",
+          "storyOrder": 3
         },
         {
           "id": "p_05",
@@ -342,7 +362,9 @@
               "pick": true
             }
           ],
-          "genSeconds": 2
+          "genSeconds": 2,
+          "storyline": "sl_city",
+          "storyOrder": 3
         },
         {
           "id": "p_06",
@@ -382,7 +404,9 @@
               "duration": 0.5,
               "speed": -1
             }
-          ]
+          ],
+          "storyline": "sl_paper",
+          "storyOrder": 1
         }
       ],
       "characters": [
@@ -410,7 +434,9 @@
           ],
           "image": {
             "path": "images/page-07.jpg"
-          }
+          },
+          "storyline": "sl_city",
+          "storyOrder": 4
         },
         {
           "id": "p_08",
@@ -429,7 +455,9 @@
             "path": "images/page-08.jpg"
           },
           "lyrics": "And the moon goes back to paper",
-          "effect": "strobe"
+          "effect": "strobe",
+          "storyline": "sl_city",
+          "storyOrder": 5
         },
         {
           "id": "p_09",
@@ -442,7 +470,9 @@
           "characters": [
             "mr-hat"
           ],
-          "altLabel": "A"
+          "altLabel": "A",
+          "storyline": "sl_paper",
+          "storyOrder": 4
         },
         {
           "id": "p_09b",
@@ -456,7 +486,9 @@
           "description": "Mr Hat leaves the paper moon where it is and tips his hat to camera.",
           "characters": [
             "mr-hat"
-          ]
+          ],
+          "storyline": "sl_paper",
+          "storyOrder": 5
         }
       ],
       "slot": "slot_end",
@@ -484,7 +516,9 @@
           ],
           "image": {
             "path": "images/page-02.jpg"
-          }
+          },
+          "storyline": "sl_city",
+          "storyOrder": 6
         },
         {
           "id": "p_r2",
@@ -498,7 +532,9 @@
           ],
           "image": {
             "path": "images/page-06.jpg"
-          }
+          },
+          "storyline": "sl_paper",
+          "storyOrder": 6
         }
       ]
     }

@@ -27,6 +27,14 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
   - **Drawer:** **Enter** or **Open in drawer** opens the page in the big drawer.
   - **Mouse and touch:** the 👁 button on a card opens the preview; swipe left or right inside it.
   - **Space and other keys:** Space never fires while you're typing in a field. **P** still starts Play (also ▶ Play), and inside Play, Space still pauses and resumes. Double-click still opens the drawer. If Space ever gets in the way, the 👁 button does the same.
+- **Storylines (v4):** a video can weave several storylines (e.g. Comic and Real world). Add them with **✎ Storylines** (Story tab, or in a page's drawer) and pick one per page in the drawer. Cards show the storyline colour and its story position, and the toolbar can filter by storyline.
+  - **Story tab:** one tab per storyline, showing only its pages in **story order**. Drag to reorder the story; this never changes the edit. Below the pages, **Not in the edit yet** lists the storyline's pages the edit doesn't use (pool, cut, inactive alternative), with a button to bring pool pages back.
+  - **Edit tab:** all storylines woven on the song timeline, one coloured lane each. Every page is a block from its song start to its end; blocks without song time are dashed and follow the previous block.
+    - Hatched red areas are **song gaps** where no storyline has a shot. Dotted lines mark where the edit switches storyline.
+    - Click a block to select it, press **Space** to preview it, and double-click to open the drawer.
+    - The lane chips hide or show a storyline with one click, and the variant picker switches the variant the lanes follow. Reordering still happens on the board.
+  - **Pool:** tick *Pool (not in the edit)* in the drawer to keep a page on the board but out of the runtime, Play, exports and the edit view.
+  - A board without storylines works exactly as before, as one implicit story.
 - **Script view:** the whole storyboard reads as text, scene by scene.
 - **Status per page:** idea → prompted → rendered → picked → in edit → final, or cut (skipped in Play). Old files load with `image` read as *rendered* and `animated` as *picked*. You can filter the board by status or character.
 - **Breakout drawer (v2):** double-click a page, or press ⤢ in the editor, to open a large panel with these tabs:
