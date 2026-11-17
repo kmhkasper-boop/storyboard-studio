@@ -66,6 +66,7 @@
   <select id="fStory" aria-label="Filter by storyline" hidden><option value="*">All storylines</option></select>
   <label class="zoom" title="Card size">🔍<input id="zoom" type="range" min="140" max="420" step="10" value="240"></label>
   <label class="chk" title="Show lyrics and description on cards"><input type="checkbox" id="showText" checked> text</label>
+  <select id="cardClips" aria-label="Clips on cards" title="Clips on cards: play on hover, loop every visible card, or off (needs the project folder open, or the online sample)"><option value="hover">🎞 clips: hover</option><option value="loop">🎞 clips: loop</option><option value="off">🎞 clips: off</option></select>
   <span id="variantWrap" hidden><select id="variantSel" aria-label="Variant" title="Variant: a named set of active alternatives"></select><button id="btnVariants" title="Manage variants">⇄</button></span>
   <span class="kbd-hint" title="Click a page or scene header, then press Space for a big preview. P = Play.">⌨ Space = preview</span>
   <div class="spacer"></div>
@@ -99,12 +100,12 @@
 
 <div id="qlook" hidden role="dialog" aria-label="Page preview">
   <div class="ql-box">
-    <div id="qlStage">
-      <img id="qlImg" alt="" hidden draggable="false"><video id="qlVid" playsinline muted hidden></video><div id="qlBlank" hidden></div>
-      <a id="qlDrive" class="ql-drive" hidden target="_blank" rel="noopener" title="This clip is only on Google Drive: open it there to play">▶ Play in Drive</a>
+    <div id="qlStage" tabindex="-1">
+      <img id="qlImg" alt="" hidden draggable="false"><video id="qlVid" playsinline muted hidden></video><iframe id="qlFrame" hidden title="Google Drive player" allow="autoplay; fullscreen; encrypted-media" allowfullscreen></iframe><div id="qlBlank" hidden></div><div id="qlProg" hidden><i></i></div>
+      <div class="ql-vbtns"><button id="qlEmbed" class="ql-drive" hidden>▶ Play here</button><a id="qlDrive" class="ql-drive" hidden target="_blank" rel="noopener" title="This clip is only on Google Drive: open it there in a new tab">↗ Open in Drive</a></div>
       <button id="qlPrev" class="ql-nav" title="Previous page (←)">‹</button><button id="qlNext" class="ql-nav" title="Next page (→)">›</button>
     </div>
-    <div class="ql-cap" title="Space / Esc / click outside to close · ←/→ pages · ↑/↓ scenes · Enter = drawer">
+    <div class="ql-cap" title="Space / Esc / click outside to close · ←/→ pages · ↑/↓ scenes · Enter = drawer · V = play a Drive clip here">
       <div class="ql-row"><div id="qlHead"></div><div class="ql-actions"><button id="qlMore" title="Show the full lyrics and description">more ▾</button><button id="qlOpenDrawer" title="Open in drawer (Enter)">Drawer ⏎</button><button id="qlClose" title="Close (Space / Esc)">✕</button></div></div>
       <div class="ql-text"><span id="qlTitle"></span><span id="qlLyr"></span><span id="qlDesc"></span></div>
     </div>

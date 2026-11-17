@@ -34,7 +34,8 @@
   let view = 'board';
   let undoStack = [], redoStack = [], lastKey = null, lastKeyTime = 0;
   let dirty = false;
-  let prefs = Object.assign({ name: 'Lucas', autosave: true, zoom: 240, showText: true }, safeJson(localStorage.getItem(LS_PREFS)) || {});
+  const APP_VERSION = 'v4.1';
+  let prefs = Object.assign({ name: 'Lucas', autosave: true, zoom: 240, showText: true, cardClips: 'hover', driveEmbed: false }, safeJson(localStorage.getItem(LS_PREFS)) || {});
   const local = { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false };
   let remoteBase = null; // URL the doc was fetched from (media paths resolve relative to it)
   const urlCache = new Map();
@@ -198,27 +199,64 @@
     if (m.driveId) { add(driveThumb(m.driveId, w)); add(driveLh3(m.driveId, w)); }
     return out;
   }
+  // ---------- v4.1: media memory (no flicker) ----------
+  // A picture URL that failed (e.g. a Drive thumbnail that needs sign-in) is skipped for 2 minutes instead of being
+  // retried on every re-render / page loop (each retry used to blank the picture until it failed again).
+  const goodUrls = new Set(), badUrls = new Map(); const BAD_TTL = 120000;
+  const isBad = (u) => { const t = badUrls.get(u); if (t === undefined) return false; if (Date.now() - t > BAD_TTL) { badUrls.delete(u); return false; } return true; };
+  const markGood = (u) => { goodUrls.add(u); badUrls.delete(u); };
+  const markBad = (u) => { goodUrls.delete(u); badUrls.set(u, Date.now()); };
+  const usable = (list) => list.filter(u => u && !isBad(u));
+  /** Probe an image URL off-screen; resolves true when it decodes. The visible <img> only switches once a URL is known to work. */
+  function probeImg(u) {
+    return new Promise(res => { const im = new Image(); im.onload = () => { markGood(u); res(im); }; im.onerror = () => { markBad(u); res(null); }; im.src = u; });
+  }
+  /** v4.1: low-res preview clips made by make-previews.command live next to each clip: <clip folder>/_previews/<name>.preview.mp4 */
+  const proxyPathFor = (full) => { const i = full.lastIndexOf('/'); return full.slice(0, i + 1) + '_previews/' + full.slice(i + 1).replace(/\.[^./]+$/, '') + '.preview.mp4'; };
+  const PROXY_DIR = /(^|\/)_previews\//i;
+  function proxyEntry(m) {
+    if (!local.kind || !m || !m.path || !local.proxies) return null;
+    const pp = proxyPathFor(joinPath(local.base, m.path));
+    return local.proxies.get(pp) || local.proxies.get(pp.toLowerCase()) || null;
+  }
+  async function proxyUrl(m) { const e = proxyEntry(m); return e ? entryUrl(e).catch(() => null) : null; }
   /** v3.4: THE visual resolver shared by board cards and the big preview.
-   *  stills: the page image (file, then Drive thumbnail); video: a playable clip; vstills: Drive thumbnails of the clip (poster). */
+   *  stills: the page image (file, then Drive thumbnail); video: a playable clip; proxy: its small preview clip (v4.1);
+   *  vstills: Drive thumbnails of the clip (poster). */
   async function visualPlan(p, w) {
     const im = p.image, vi = pageClip(p);
     const stills = await mediaStills(im, w);
     const vr = await resolveMedia(vi).catch(() => null);
     const video = vr && vr.playable ? vr.src : null;
+    const proxy = vi ? await proxyUrl(vi) : null;
     const vstills = []; if (vi && vi.driveId) { vstills.push(driveThumb(vi.driveId, w), driveLh3(vi.driveId, w)); }
-    return { im, vi, stills, video, vstills };
+    return { im, vi, stills, video, proxy, vstills };
   }
+  /** v4.1: board cards keep their loaded picture across re-renders (outside-change poll, edits, autosave): the media node
+   *  is moved into the new card instead of being rebuilt and reloaded. */
+  const thumbCache = new Map();
+  const mkey = (m) => m ? [m.path, m.driveId, m.url ? m.url.length + ':' + m.url.slice(-48) : '', m.in, m.out].join('¦') : '';
+  const thumbKey = (p) => [mkey(p.image), mkey(pageClip(p)), local.kind, local.name, local.base, remoteBase, prefs.cardClips].join('|');
   /** Fills a container with the best visual for a page (image, else video frame, else the clip's Drive thumbnail, else placeholder). */
   function fillThumb(box, p, { w = 640 } = {}) {
-    const ph = (txt) => { box.querySelectorAll('img,video').forEach(n => n.remove()); if (!box.querySelector('.ph')) box.prepend(el('div', { class: 'ph' }, txt)); };
-    const tryImg = (src, fallback) => {
-      const img = el('img', { alt: '', loading: 'lazy', draggable: 'false' });
-      img.onerror = () => { img.remove(); fallback(); };
-      img.src = src; box.prepend(img);
+    const key = thumbKey(p); const c = thumbCache.get(p.id);
+    if (c && c.key === key && c.ok) {
+      const owner = c.node.isConnected && c.node.closest('.card');
+      if (!c.node.isConnected || (owner && owner.dataset.id === p.id)) { box.prepend(c.node); wireMotion(box, c); return; }
+    }
+    const wrap = el('div', { class: 'tmedia' }); box.prepend(wrap);
+    const entry = { key, node: wrap, ok: false, clip: null, vd: null }; thumbCache.set(p.id, entry);
+    const ph = (txt) => { wrap.querySelectorAll('img,video').forEach(n => n.remove()); if (!wrap.querySelector('.ph')) wrap.prepend(el('div', { class: 'ph' }, txt)); };
+    const tryList = (list, fb) => {
+      const l = usable(list); if (!l.length) return fb();
+      probeImg(l[0]).then(okImg => {
+        if (!okImg) return tryList(l.slice(1), fb);
+        const img = el('img', { alt: '', draggable: 'false' }); img.src = l[0]; wrap.prepend(img); entry.ok = true;
+      });
     };
-    const tryList = (list, fb) => list.length ? tryImg(list[0], () => tryList(list.slice(1), fb)) : fb();
     (async () => {
       const v = await visualPlan(p, w); const { im, vi } = v;
+      entry.clip = v.proxy || v.video; wireMotion(box, entry);
       const final = () => {
         const m = (im && im.driveId) ? im : (vi && vi.driveId) ? vi : (im || vi);
         if (!m) return ph('No image yet. Drop one here');
@@ -226,14 +264,37 @@
         ph(local.kind ? 'Missing: ' + (m.path || '?') : 'Open the project folder to see this file');
       };
       const tryVideo = (fb) => {
-        if (!v.video) return fb();
-        const vd = el('video', { preload: 'metadata', playsinline: true });
-        vd.muted = true; vd.src = v.video + '#t=0.1';
-        vd.onerror = () => { vd.remove(); fb(); };
-        box.prepend(vd);
+        const src = v.proxy || v.video; if (!src || isBad(src)) return fb();
+        const vd = el('video', { preload: 'metadata', playsinline: true, class: 'tframe' });
+        vd.muted = true; vd.src = src + '#t=0.1';
+        vd.onloadeddata = () => { entry.ok = true; };
+        vd.onerror = () => { markBad(src); vd.remove(); fb(); };
+        wrap.prepend(vd);
       };
       tryList(v.stills, () => tryVideo(() => tryList(v.vstills, final)));
     })();
+  }
+  /** v4.1: clips move on the cards. Hover a card (default) or, with "Clips on cards: loop", every visible card plays its clip
+   *  muted (the small _previews proxy when there is one). Only when the clip can play here (local folder / online sample). */
+  let motionIO = null;
+  function wireMotion(box, entry) {
+    if (box._motion || !entry.clip || (prefs.cardClips || 'hover') === 'off') return; box._motion = true;
+    const start = () => {
+      if (!entry.clip || isBad(entry.clip)) return;
+      if (!entry.vd) {
+        const vd = entry.vd = el('video', { class: 'tclip', playsinline: true, preload: 'auto' }); vd.muted = true; vd.loop = true; vd.src = entry.clip;
+        vd.addEventListener('playing', () => vd.classList.add('on'));
+        vd.onerror = () => { markBad(entry.clip); vd.remove(); entry.vd = null; };
+        entry.node.append(vd);
+      }
+      entry.vd.play().catch(() => {});
+    };
+    const stop = () => { if (entry.vd) { entry.vd.pause(); entry.vd.classList.remove('on'); } };
+    box._mstart = start; box._mstop = stop;
+    if (prefs.cardClips === 'loop' && 'IntersectionObserver' in window) {
+      if (!motionIO) motionIO = new IntersectionObserver(es => es.forEach(e => e.target._mstart && (e.isIntersecting ? e.target._mstart() : e.target._mstop())), { rootMargin: '100px' });
+      motionIO.observe(box);
+    } else { box.addEventListener('mouseenter', start); box.addEventListener('mouseleave', stop); }
   }
   /** What the board card for a page is showing right now (a loaded image URL), so the preview can always show at least that. */
   function cardVisual(id) {
@@ -1391,14 +1452,15 @@
   }
   function resetLocal() {
     for (const p of urlCache.values()) p.then(u => URL.revokeObjectURL(u)).catch(() => {});
-    urlCache.clear();
-    Object.assign(local, { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false });
+    urlCache.clear(); thumbCache.clear(); badUrls.clear();
+    Object.assign(local, { kind: null, root: null, name: '', files: new Map(), lower: new Map(), proxies: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false });
     remoteBase = null;
   }
   async function walk(dir, prefix, depth, out) { return S.walkDir(dir, { filter: { test: (n) => IMG_EXT.test(n) || VID_EXT.test(n) || AUD_EXT.test(n) || /\.json$/i.test(n) } }, prefix, depth, out); }
   function indexEntries(entries) {
-    local.files = new Map(); local.lower = new Map();
+    local.files = new Map(); local.lower = new Map(); local.proxies = new Map();
     for (const e of entries) {
+      if (PROXY_DIR.test(e.path)) { local.proxies.set(e.path, e); local.proxies.set(e.path.toLowerCase(), e); continue; } // v4.1 preview clips: not board media
       e.type = IMG_EXT.test(e.name) ? 'image' : VID_EXT.test(e.name) ? 'video' : AUD_EXT.test(e.name) ? 'audio' : 'json';
       local.files.set(e.path, e); local.lower.set(e.path.toLowerCase(), e);
     }
@@ -1703,7 +1765,7 @@
     modal(box);
   }
   function helpDialog() {
-    modal(el('div', null, el('div', { html: `<h2>❓ How it works</h2>
+    modal(el('div', null, el('div', { html: `<h2>❓ How it works <small class="muted">Storyboard Studio ${APP_VERSION}</small></h2>
 <p><b>The storyboard is one plain file</b> (<code>storyboard.json</code> or <code>Name.storyboard.json</code>) in the Drive project folder. Mirrage reads and edits that file; you edit it here. Pages point to images and clips by <b>path inside the folder</b> and by <b>Drive file ID</b>.</p>
 <ul>
 <li><b>Reorder:</b> drag pages (also into another scene); drag scenes by ⠿ or in the left list. The ↑/↓ buttons do the same.</li>
@@ -1716,9 +1778,10 @@
 <li><b>Role</b> (insert / flash-forward / flashback) is shown on cards; ⚠ in the header lists song-time gaps between linear pages; ⏱ means the video prompt length differs from the page.</li>
 <li><b>☰ Cast manager</b>: characters, locked canon, reference sets and looks. <b>☰ Export</b> CSV / EDL for DaVinci Resolve.</li>
 <li>Every save raises <code>revision</code>; if the file changed since you opened it, you are asked before anything is overwritten.</li>
-<li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser. Videos show a still and an ↗ Drive link.</li>
+<li><b>Video previews (v4.1):</b> with the project folder open, clips play in the big preview and on the cards (hover, or 🎞 clips: loop). Online with Drive links, press <b>▶ Play here</b> (or V) in the big preview to play the clip with Google's Drive player: it works when this browser is signed in to Google with access to the file, or when the file is shared “Anyone with the link”. Optional: run <code>make-previews.command</code> once for small, smooth preview clips (_previews folders).</li>
+<li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser.</li>
 </ul>
-<p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>Space</code> big preview of the selected page or scene (Space / Esc / click outside closes; ←/→ pages, ↑/↓ scenes, Enter opens the drawer; also the 👁 button on a card, swipe on touch) · <code>P</code> play (Space plays/pauses only inside Play mode) · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
+<p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>Space</code> big preview of the selected page or scene (Space / Esc / click outside closes; ←/→ pages, ↑/↓ scenes, Enter opens the drawer, V plays a Drive clip here; also the 👁 button on a card, swipe on touch) · <code>P</code> play (Space plays/pauses only inside Play mode) · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
       el('div', { class: 'modal-actions' }, el('button', { class: 'primary', onclick: closeModal }, 'OK'))));
   }
 
@@ -1754,6 +1817,7 @@
     for (const sg of raw) {
       const m = sg.media; const r = await resolveMedia(m).catch(() => null);
       const vid = isVidMedia(m) || (!!m && m === clip && !sg.isCut);
+      const proxy = vid ? await proxyUrl(m) : null; // v4.1: small preview clip next to the clip (_previews/)
       let kind = 'blank', stills = [];
       if (sg.isCut) {
         if (r && r.playable && vid) kind = 'video';
@@ -1765,22 +1829,32 @@
         stills = plan.stills.concat(plan.vstills.filter(u => !plan.stills.includes(u)));
         if (!vid && r && r.playable && !stills.includes(r.src)) stills.unshift(r.src);
       }
+      if (kind !== 'video' && proxy) kind = 'video';
       if (kind !== 'video' && (stills.length || r)) kind = 'image';
       const driveVideo = vid && m && m.driveId ? m.driveId : ''; // offered whenever the clip is not playing here
-      segs.push(Object.assign({}, sg, { r, kind, stills, driveVideo }));
+      const srcs = kind === 'video' ? [r && r.playable ? r.src : null, proxy].filter((u, i, a) => u && a.indexOf(u) === i) : [];
+      segs.push(Object.assign({}, sg, { r, kind, stills, driveVideo, srcs }));
     }
     return segs;
   }
-  /** v3.4: load the first still that works; then the card's own picture; then give up (onFail). */
-  function loadStill(img, sg, p, onFail) {
-    const list = (sg.stills || []).slice(); const cv = cardVisual(p.id); if (cv && !list.includes(cv)) list.push(cv);
-    let k = 0; const token = img._tok = Math.random();
+  /** v3.4: load the first still that works; then the card's own picture; then give up (onFail).
+   *  v4.1: URLs are probed off-screen (the visible picture only changes when the next one is ready, so it never goes
+   *  black in between), known-bad URLs are skipped, and an <img> already showing one of the candidates is left alone. */
+  function loadStill(img, sg, p, onFail, onShow) {
+    const all = (sg.stills || []).slice(); const cv = cardVisual(p.id); if (cv && !all.includes(cv)) all.push(cv);
+    const token = img._tok = Math.random(); const done = () => { if (onShow) onShow(img); };
+    const list = usable(all); let k = 0; const cur = img.getAttribute('src');
+    if (cur && list[0] === cur && img.complete && img.naturalWidth > 0) { img.hidden = false; return done(); }
     const next = () => {
       if (img._tok !== token) return;
       if (k >= list.length) { img.hidden = true; img.removeAttribute('src'); return onFail(); }
-      img.src = list[k++];
+      const u = list[k++];
+      probeImg(u).then(ok => {
+        if (img._tok !== token) return; if (!ok) return next();
+        img.onerror = null; if (img.getAttribute('src') !== u) img.src = u; img.hidden = false; done();
+      });
     };
-    img.onerror = next; next();
+    next();
   }
   async function showStep(i, offset) {
     pl.i = i; pl.elapsed = offset || 0; pl.seg = -1;
@@ -1818,9 +1892,9 @@
     const img = $('#plImg'), vid = $('#plVid'), blank = $('#plBlank');
     if (force || k !== pl.seg) {
       pl.seg = k;
-      img.hidden = true; vid.hidden = true; blank.textContent = ''; vid.pause();
+      vid.hidden = true; blank.textContent = ''; vid.pause(); if (sg.kind === 'video') img.hidden = true; // v4.1: a still stays up until the next one is ready
       if (sg.kind === 'video') {
-        if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
+        if (vid.getAttribute('src') !== sg.srcs[0]) vid.src = sg.srcs[0];
         vid.onerror = () => { if (pl.segs[pl.seg] !== sg) return; vid.hidden = true; img.hidden = false; loadStill(img, sg, p, () => { blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || ''); }); };
         vid.muted = songOn() || !pl.playing; vid.hidden = false;
         const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed)));
@@ -1829,8 +1903,8 @@
         if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
       } else if (sg.kind === 'image') {
         img.classList.remove('kb'); void img.offsetWidth; img.style.setProperty('--kbdur', sg.dur + 's');
-        img.hidden = false; loadStill(img, sg, p, () => { blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(image not available here)'); }); if (!sg.isCut) img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
-      } else blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)');
+        loadStill(img, sg, p, () => { blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(image not available here)'); }); if (!sg.isCut) img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
+      } else { img.hidden = true; blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)'); }
       return;
     }
     if (sg.kind === 'video' && vid.readyState >= 1) {
@@ -1906,7 +1980,7 @@
     selScene = id; $$('.scene.sel-scene').forEach(n => n.classList.remove('sel-scene'));
     if (id) { selected = null; $$('.card.sel').forEach(c => c.classList.remove('sel')); renderEditor(); const n = document.getElementById('scene-' + id); if (n) n.classList.add('sel-scene'); }
   }
-  const ql = { open: false, id: null, segs: [], seg: -1, t0: 0, raf: 0, token: 0, lastSeek: 0 };
+  const ql = { open: false, id: null, segs: [], seg: -1, t0: 0, raf: 0, token: 0, lastSeek: 0, segTok: 0, embedId: '', embedOn: false, embedT: 0 };
   /** Page to preview: the selected page, else the first active page of the selected scene/slot (or of the whole board). */
   function qlTarget() {
     if (selected && findPage(selected)) return selected;
@@ -1933,54 +2007,98 @@
     $('#qlPrev').disabled = i <= 0; $('#qlNext').disabled = i < 0 || i >= seq.length - 1;
     const token = ql.token = Math.random(); cancelAnimationFrame(ql.raf);
     const segs = await buildSegments(p); if (token !== ql.token || !ql.open) return;
-    ql.segs = segs; ql.seg = -1; ql.t0 = performance.now(); qlRender(true); ql.raf = requestAnimationFrame(qlTick);
+    ql.segs = segs; ql.seg = -1; ql.t0 = performance.now(); ql.embedId = embedIdFor(p, segs); qlFrameOff();
+    qlRender(true); ql.raf = requestAnimationFrame(qlTick);
+    if (ql.embedId && prefs.driveEmbed) { clearTimeout(ql.embedT); ql.embedT = setTimeout(() => { if (token === ql.token && ql.open) qlFrameOn(); }, 450); } // dwell: arrowing through pages does not load a player per page
   }
   function qlSegAt(t, p) {
     const total = ql.segs.reduce((a, s) => a + s.dur, 0) || 1; let x = ql.segs.length > 1 ? t % total : t; let k = 0; // cuts loop within the page, like Play
     while (k < ql.segs.length - 1 && x >= ql.segs[k].dur) { x -= ql.segs[k].dur; k++; }
     return { k, x };
   }
+  /** v4.1: the Drive clip the "Play here" player shows for a page: only when nothing plays locally. */
+  function embedIdFor(p, segs) {
+    if (segs.some(sg => sg.kind === 'video')) return '';
+    const c = pageClip(p); if (c && c.driveId && isVidMediaOrClip(c, p)) return c.driveId;
+    const sg = segs.find(x => x.driveVideo); return sg ? sg.driveVideo : '';
+  }
+  const isVidMediaOrClip = (m, p) => isVidMedia(m) || m === pageClip(p);
+  /** v4.1: Google's own Drive player (iframe) on top of the still. Works for clips this browser may open
+   *  (signed in to Google with access, or shared "Anyone with the link"). Keys stay with the preview (see focus guard). */
+  function qlFrameOn() {
+    if (!ql.embedId) return; const f = $('#qlFrame'); const src = drivePreview(ql.embedId);
+    if (f.getAttribute('src') !== src) { f.classList.remove('ready'); f.onload = () => f.classList.add('ready'); f.src = src; }
+    f.hidden = false; ql.embedOn = true; $('#qlEmbed').textContent = '🖼 Picture'; $('#qlEmbed').title = 'Back to the still (V)'; $('#qlook').classList.add('ql-embed');
+  }
+  function qlFrameOff() {
+    clearTimeout(ql.embedT); const f = $('#qlFrame'); if (!f.hidden || f.getAttribute('src')) { f.hidden = true; f.removeAttribute('src'); f.classList.remove('ready'); }
+    ql.embedOn = false; $('#qlook').classList.remove('ql-embed');
+    const b = $('#qlEmbed'); b.hidden = !ql.embedId; b.textContent = '▶ Play here'; b.title = 'Play this Drive clip inside the preview with Google’s player (V). Needs Google sign-in with access, or the file shared “Anyone with the link”.';
+  }
+  function qlToggleEmbed() { if (!ql.embedId) return; if (ql.embedOn) { prefs.driveEmbed = false; savePrefs(); qlFrameOff(); } else { prefs.driveEmbed = true; savePrefs(); qlFrameOn(); } }
+  /** Shows one segment. v4.1: nothing is hidden before its replacement is ready (no black frames), and a page that loops
+   *  (or a segment with the same media) keeps its <img>/<video> as is: the old code re-ran this every loop of the page,
+   *  hiding the picture and reloading it, which is what made the preview go dark and come back. */
   function qlRender(force) {
     if (!ql.segs.length) return; const p = findPage(ql.id).page;
     const el2 = (performance.now() - ql.t0) / 1000; const { k, x } = qlSegAt(el2, p); const sg = ql.segs[k];
     const img = $('#qlImg'), vid = $('#qlVid'), blank = $('#qlBlank');
+    if (ql.embedOn && !force) return; // Google's player is showing: leave it alone
     if (force || k !== ql.seg) {
-      ql.seg = k; img.hidden = true; vid.hidden = true; blank.hidden = true; vid.pause();
+      ql.seg = k; const tok = ql.segTok = Math.random(); const mine = () => ql.segTok === tok && ql.open;
       const dl = $('#qlDrive'); const showDrive = (on) => { dl.hidden = !(on && sg.driveVideo); if (sg.driveVideo) dl.href = driveView(sg.driveVideo); }; showDrive(sg.kind !== 'video');
+      const fit = (wd, ht) => { if (wd && ht) $('#qlook').style.setProperty('--ql-ar', wd + ' / ' + ht); };
+      const shown = (which) => { // reveal one layer, hide the others
+        if (!mine()) return;
+        if (which !== 'img' && !img.hidden) img.hidden = true; if (which !== 'vid') { if (!vid.hidden) vid.hidden = true; vid.pause(); } if (which !== 'blank' && !blank.hidden) blank.hidden = true;
+        if (which === 'img') fit(img.naturalWidth, img.naturalHeight);
+      };
       const noMedia = () => { // only when nothing could be shown: clean placeholder, text stays in the caption strip
+        if (!mine()) return; shown('blank');
         const anyMedia = !!(p.image || pageClip(p) || (p.cuts && p.cuts.length));
         blank.hidden = false; blank.innerHTML = '';
         blank.append(el('div', { class: 'ql-ph-icon' }, anyMedia ? '🖼' : '✎'), el('div', { class: 'ql-ph-txt' }, anyMedia ? (local.kind ? 'This page’s media isn’t in the opened folder and Drive didn’t answer.' : 'Media not visible here. Sign in to Google in this browser, or open the project folder.') : 'No image or clip yet'));
       };
-      const fit = (wd, ht) => { if (wd && ht) $('#qlook').style.setProperty('--ql-ar', wd + ' / ' + ht); };
-      img.onload = () => fit(img.naturalWidth, img.naturalHeight);
+      const still = () => { const l = sg.stills && sg.stills.length ? sg : { stills: [] }; loadStill(img, l, p, noMedia, () => shown('img')); };
       if (sg.kind === 'video') {
-        if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
-        vid.poster = (sg.stills && sg.stills[0]) || '';
-        vid.onloadedmetadata = () => fit(vid.videoWidth, vid.videoHeight);
-        vid.onerror = () => { if (ql.segs[ql.seg] !== sg) return; vid.hidden = true; img.hidden = false; showDrive(true); loadStill(img, sg, p, noMedia); };
-        vid.muted = true; vid.hidden = false; const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed))); vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
-        const seek = () => { try { vid.currentTime = videoTimeFor(sg, x, vid); } catch { } if (sg.speed > 0) vid.play().catch(() => {}); };
-        if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
+        const srcs = usable(sg.srcs || []); let si = 0;
+        const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed)));
+        const seekPlay = () => { if (!mine()) return; try { const at = qlSegAt((performance.now() - ql.t0) / 1000, p); vid.currentTime = videoTimeFor(sg, at.k === k ? at.x : 0, vid); } catch { } if (sg.speed > 0) vid.play().catch(() => {}); };
+        const tryClip = () => {
+          if (!mine()) return; if (si >= srcs.length) { showDrive(true); vid.removeAttribute('src'); return still(); }
+          const src = srcs[si++];
+          vid.onerror = () => { if (!mine()) return; markBad(src); tryClip(); };
+          vid.onloadeddata = () => { if (!mine()) return; markGood(src); shown('vid'); vid.hidden = false; };
+          vid.onloadedmetadata = () => fit(vid.videoWidth, vid.videoHeight);
+          if (vid.getAttribute('src') !== src) { vid.src = src; vid.addEventListener('loadedmetadata', seekPlay, { once: true }); }
+          else if (vid.readyState >= 2) { shown('vid'); vid.hidden = false; fit(vid.videoWidth, vid.videoHeight); seekPlay(); }
+          else vid.addEventListener('loadedmetadata', seekPlay, { once: true });
+        };
+        vid.muted = true; vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
+        if ((vid.hidden || vid.getAttribute('src') !== srcs[0]) && sg.stills && sg.stills.length) loadStill(img, sg, p, () => {}, () => { if (!vid.hidden && vid.getAttribute('src') === srcs[0]) img.hidden = true; else fit(img.naturalWidth, img.naturalHeight); }); // poster while the clip loads
+        tryClip();
       } else if (sg.kind === 'image') {
-        img.hidden = false; loadStill(img, sg, p, noMedia);
+        still();
       } else {
         const cv = cardVisual(p.id); // last resort: whatever the card shows
-        if (cv) { img.hidden = false; loadStill(img, { stills: [cv] }, p, noMedia); } else noMedia();
+        if (cv) loadStill(img, { stills: [cv] }, p, noMedia, () => shown('img')); else noMedia();
       }
       return;
     }
-    if (sg.kind === 'video' && vid.readyState >= 1) {
+    const prog = $('#qlProg'); const showProg = sg.kind === 'video' && !vid.hidden; if (prog.hidden === showProg) prog.hidden = !showProg;
+    if (showProg) prog.firstChild.style.width = Math.min(100, x / (sg.dur || 1) * 100).toFixed(1) + '%'; // v4.1: the clip is playing
+    if (sg.kind === 'video' && !vid.hidden && vid.readyState >= 1) {
       const want = videoTimeFor(sg, x, vid); const m = sg.media || {};
       if (sg.speed < 0) { if (!vid.paused) vid.pause(); if (!vid.seeking && performance.now() - ql.lastSeek > 40) { ql.lastSeek = performance.now(); try { vid.currentTime = want; } catch { } } }
+      else if (Math.abs(vid.currentTime - want) > 0.3 && !vid.seeking) { try { vid.currentTime = want; } catch { } if (vid.paused) vid.play().catch(() => {}); } // also restarts the clip when the page loops
       else if (m.out !== undefined && vid.currentTime >= m.out - 0.02) { if (!vid.paused) vid.pause(); }
-      else if (Math.abs(vid.currentTime - want) > 0.3 && !vid.seeking) { try { vid.currentTime = want; } catch { } }
       else if (vid.paused && !vid.ended) vid.play().catch(() => {});
     }
   }
   function qlTick(now) {
     if (!ql.open) return; const p = findPage(ql.id) && findPage(ql.id).page; if (!p) return qlClose();
-    if ((now - ql.t0) / 1000 >= dur(p)) { ql.t0 = now; qlRender(true); } else qlRender(false); // the page loops
+    if ((now - ql.t0) / 1000 >= dur(p)) ql.t0 = now; // the page loops; v4.1: without re-rendering (that was the flicker)
+    qlRender(false);
     ql.raf = requestAnimationFrame(qlTick);
   }
   function qlStep(delta) { const seq = activePages(); let i = seq.findIndex(x => x.id === ql.id); if (i < 0) { const f = findPage(ql.id); i = seq.findIndex(x => x.id === (f && f.page.altOf)); } const n = seq[i + delta]; if (n) qlShow(n.id); }
@@ -1989,14 +2107,17 @@
     const t = scs[(cur < 0 ? 0 : cur) + delta]; if (t) qlShow(t.pages[0].id);
   }
   function qlClose() {
-    ql.open = false; ql.token = 0; cancelAnimationFrame(ql.raf); $('#qlook').hidden = true; document.body.classList.remove('ql-on');
-    const v = $('#qlVid'); v.pause(); v.removeAttribute('src'); v.load();
+    ql.open = false; ql.token = 0; ql.segTok = 0; cancelAnimationFrame(ql.raf); $('#qlook').hidden = true; document.body.classList.remove('ql-on');
+    const v = $('#qlVid'); v.pause(); v.removeAttribute('src'); v.load(); v.hidden = true; $('#qlProg').hidden = true; ql.embedId = ''; qlFrameOff();
     const c = ql.id && document.querySelector('.card[data-id="' + CSS.escape(ql.id) + '"]'); if (c) c.focus({ preventScroll: true });
   }
+  // v4.1 focus guard: a click inside Google's player moves keyboard focus into that (cross-origin) frame, where our keys
+  // never arrive. Take focus back right after, so Space still closes, the arrows still turn pages.
+  window.addEventListener('blur', () => { if (!ql.open) return; setTimeout(() => { const a = document.activeElement; if (ql.open && a && a.tagName === 'IFRAME') { a.blur(); $('#qlStage').focus({ preventScroll: true }); } }, 120); });
   function qlDrawer() { const id = ql.id; qlClose(); drawer = true; select(id); renderEditor(); }
   $('#qlook').addEventListener('click', (e) => { if (e.target.id === 'qlook') qlClose(); });
   $('#qlMore').onclick = (e) => { e.stopPropagation(); const c = $('#qlook .ql-cap'); c.classList.toggle('open'); $('#qlMore').textContent = c.classList.contains('open') ? 'less ▴' : 'more ▾'; };
-  $('#qlClose').onclick = qlClose; $('#qlPrev').onclick = () => qlStep(-1); $('#qlNext').onclick = () => qlStep(1); $('#qlOpenDrawer').onclick = qlDrawer;
+  $('#qlClose').onclick = qlClose; $('#qlEmbed').onclick = (e) => { e.stopPropagation(); qlToggleEmbed(); $('#qlStage').focus({ preventScroll: true }); }; $('#qlPrev').onclick = () => qlStep(-1); $('#qlNext').onclick = () => qlStep(1); $('#qlOpenDrawer').onclick = qlDrawer;
   { let sx = null, sy = 0; const st = $('#qlStage');
     st.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') return; sx = e.clientX; sy = e.clientY; }); st.addEventListener('dragstart', (e) => e.preventDefault());
     st.addEventListener('pointerup', (e) => { if (sx === null || e.pointerType === 'touch') return; const dx = e.clientX - sx, dy = e.clientY - sy; sx = null; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) qlStep(dx < 0 ? 1 : -1); });
@@ -2039,6 +2160,7 @@
   $('#search').addEventListener('input', applyFilter); $('#fStatus').addEventListener('change', applyFilter); $('#fChar').addEventListener('change', applyFilter); $('#fStory').addEventListener('change', applyFilter);
   $('#zoom').value = prefs.zoom; $('#zoom').oninput = () => { prefs.zoom = +$('#zoom').value; savePrefs(); document.documentElement.style.setProperty('--card', prefs.zoom + 'px'); };
   $('#showText').checked = prefs.showText; $('#showText').onchange = () => { prefs.showText = $('#showText').checked; savePrefs(); $('#board').classList.toggle('hide-text', !prefs.showText); };
+  $('#cardClips').value = prefs.cardClips || 'hover'; $('#cardClips').onchange = () => { prefs.cardClips = $('#cardClips').value; savePrefs(); thumbCache.clear(); if (motionIO) { motionIO.disconnect(); motionIO = null; } render(); };
   $('#fileDir').addEventListener('change', (e) => onDirInput(Array.from(e.target.files)));
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', (e) => {
@@ -2048,6 +2170,7 @@
       else if (e.key === 'ArrowRight') { e.preventDefault(); qlStep(1); } else if (e.key === 'ArrowLeft') { e.preventDefault(); qlStep(-1); }
       else if (e.key === 'ArrowDown') { e.preventDefault(); qlScene(1); } else if (e.key === 'ArrowUp') { e.preventDefault(); qlScene(-1); }
       else if (e.key === 'Enter') { e.preventDefault(); qlDrawer(); }
+      else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); qlToggleEmbed(); }
       return;
     }
     if (!$('#player').hidden) {
@@ -2098,6 +2221,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
+  window.__sb = { render: () => render(), APP_VERSION, thumbCache, badUrls, qlToggleEmbed, qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
   init();
 })();

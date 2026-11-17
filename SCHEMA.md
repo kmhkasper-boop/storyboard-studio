@@ -6,6 +6,8 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **v4.1 (app update, still `"version": 4`, no new fields):** clips play in the big preview and on the cards, and the Drive player can play Drive-only clips in the preview. Nothing changes in the file. One folder convention is new and optional: **preview clips** in `_previews/` folders (see Media object). Don't link `_previews` files in the storyboard; the app finds them by name.
+>
 > **What's new in v4** (`"version": 4`; every new field is optional):
 > - top-level `storylines`: `[{ "id", "name", "color" }]`, the storylines the video weaves together (e.g. Bleeding Page: Comic and Real world; Zeppelin Day: A to E). `colour` is read as an alias of `color`.
 > - page `storyline`: the id of the one storyline the page belongs to.
@@ -184,6 +186,8 @@ The app also accepts `in-edit`/`inedit` → `inEdit` and `done` → `final`. Unk
 | `md5`, `modifiedTime` | **v2** drift check: copy them from the Drive file metadata. The editor shows them, so you can both see whether the linked file changed. |
 
 Always fill in both `path` and `driveId` when you know them.
+
+**v4.1: preview clips (optional, no field).** For a clip at `path`, the app also looks for `<clip folder>/_previews/<clip name without extension>.preview.mp4`, for example `bp-sb2-clips/_previews/SB2_03_v2.preview.mp4` for `bp-sb2-clips/SB2_03_v2.mp4`. Lucas makes them with `make-previews.command` (640 px H.264, no sound). Cards play them on hover, and the preview uses them when the original can't play in the browser. Files inside `_previews/` are never treated as board media, so auto-link and the pickers ignore them. **Keep `path` and `driveId` pointing at the real clip**, never at a preview file.
 
 **v3: online only.** A media object with a `driveId` but no `path` (and no `url`) is valid. The app shows it as **☁ online only**: the Drive thumbnail plus the ↗ Drive button, never as an error or a missing file. It can't play inside the app or be part of a local folder; add `path` once the file is in the project folder.
 

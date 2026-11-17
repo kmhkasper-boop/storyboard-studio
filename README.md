@@ -12,6 +12,8 @@ A free storyboard tool for you and Mirrage. The storyboard is one plain file (`s
    - No Drive for desktop? Download the folder from drive.google.com (right-click → Download), unzip it, and open that folder. When you're done, upload `storyboard.json` back to the Drive folder (Drive asks whether to replace it; choose **Replace**, which keeps the same file).
 3. If the folder has no storyboard yet, the app offers to start one: empty, or one page per image it finds.
 
+The kit also has **make-previews.command** (optional, see Video previews).
+
 Try it first with **Try the sample**, or open the `sample-project` folder from the starter kit.
 
 ## What you can do
@@ -27,6 +29,11 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
   - **Drawer:** **Enter** or **Open in drawer** opens the page in the big drawer.
   - **Mouse and touch:** the 👁 button on a card opens the preview; swipe left or right inside it.
   - **Space and other keys:** Space never fires while you're typing in a field. **P** still starts Play (also ▶ Play), and inside Play, Space still pauses and resumes. Double-click still opens the drawer. If Space ever gets in the way, the 👁 button does the same.
+- **Video previews (v4.1):** clips move inside the app wherever the browser can reach them.
+  - **Project folder open (Chrome, Edge; Safari read-only too):** the big preview plays the page's clip (muted, with speed, in/out and cuts) and loops it with the page. A thin bar at the bottom shows where the clip is. On the board, **hover a card** to play its clip on the card. The toolbar menu **🎞 clips** switches between *hover*, *loop* (every visible card plays) and *off*.
+  - **Online with Drive links only:** in the big preview press **▶ Play here** (or **V**) to play the clip with Google's own Drive player inside the preview. After you use it once, it opens by itself for the next Drive clip (V or **🖼 Picture** switches back). It works when the browser is signed in to Google with access to the file (Chrome), or when the file is shared **Anyone with the link → Viewer** (needed for Safari and iPhone). Space, Esc and the arrows keep working even after you click inside the player. Google's player can't follow speed, in/out or cuts; it plays the whole clip.
+  - **Optional, smoother cards:** double-click **make-previews.command** (in the kit) and pick the project folder. It makes small copies of every clip in a `_previews` folder next to the clips (640 px, a few hundred KB each). The board then uses those for the moving cards, and the preview uses them when Chrome can't play the original (for example ProRes `.mov`). It needs ffmpeg once: `brew install ffmpeg`. The first time, macOS may block the script because it was downloaded: right-click it → **Open** → **Open**. Run it again after new clips arrive; it skips clips that are already done.
+- **No more flicker (v4.1):** the big preview used to rebuild its picture each time a page looped (every few seconds), so it went dark and came back. It now keeps the picture and only restarts the clip. Pictures that fail to load (like a Drive thumbnail when you're signed out) are skipped for two minutes instead of retried on every loop. Board cards keep their loaded pictures when the board refreshes (for example when Mirrage's change arrives).
 - **Storylines (v4):** a video can weave several storylines (e.g. Comic and Real world). Add them with **✎ Storylines** (Story tab, or in a page's drawer) and pick one per page in the drawer. Cards show the storyline colour and its story position, and the toolbar can filter by storyline.
   - **Story tab:** one tab per storyline, showing only its pages in **story order**. Drag to reorder the story; this never changes the edit. Below the pages, **Not in the edit yet** lists the storyline's pages the edit doesn't use (pool, cut, inactive alternative), with a button to bring pool pages back.
   - **Edit tab:** all storylines woven on the song timeline, one coloured lane each. Every page is a block from its song start to its end; blocks without song time are dashed and follow the previous block.
@@ -88,7 +95,7 @@ Try it first with **Try the sample**, or open the `sample-project` folder from t
 ## Good to know
 
 - **Safari and iPhone** can't write into folders, so they open them read-only. Save then downloads `storyboard.json`; put it back in the folder. Use Chrome or Edge for live editing.
-- **Online without the folder:** images show as Drive thumbnails if you're signed in to Google in that browser. Drive videos can't play inside the app; you get a still, an **↗ Drive** button and a "Drive player" try-button. Open the folder locally to play clips.
+- **Online without the folder:** images show as Drive thumbnails if you're signed in to Google in that browser. Drive clips play in the big preview with **▶ Play here** (Google's Drive player, see Video previews). Cards stay still online; open the folder locally for moving cards. Drive doesn't let other sites stream its files straight into a video player, so speed, in/out and cuts only play from a local folder.
 - **If you and Mirrage both change the file at the same moment,** the app asks: load Mirrage's version, save yours as a copy, or overwrite.
 - Your work also autosaves in the browser. If something goes wrong, the start screen offers **Restore browser copy**.
 - Hidden macOS `._` files from Drive are ignored.

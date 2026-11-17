@@ -319,7 +319,7 @@ body.ql-on{overflow:hidden}
 #qlHead{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
 .ql-actions{margin-top:0;flex:none;gap:6px}.ql-actions button{padding:2px 8px;font-size:12px}
 .ql-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#aaa}
-.ql-text>span:not(:empty)+span:not(:empty)::before{content:' · ';color:#666;font-style:normal}
+.ql-text>span:not(:empty)~span:not(:empty)::before{content:' · ';color:#666;font-style:normal}
 #qlTitle{font-size:13px;color:#eee}
 .ql-cap.open{max-height:38vh;overflow:auto}.ql-cap.open .ql-text{white-space:normal}
 .ql-cap.open .ql-text>span{display:block}.ql-cap.open .ql-text>span::before{content:none!important}
@@ -376,3 +376,19 @@ body.ql-on{overflow:hidden}
 .ev-hint{font-size:12.5px;margin:8px 2px}
 .sl-row .fld{flex:1;min-width:120px}.sl-row select{width:100%}
 .seg button{padding:5px 10px}
+
+/* v4.1: no-flicker layers + video previews */
+#qlStage img,#qlStage video,#qlStage iframe{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;border:0}
+#qlStage img{z-index:1}#qlStage video{z-index:2;background:transparent}
+#qlStage iframe{z-index:3;background:#000;visibility:hidden}#qlStage iframe.ready{visibility:visible}#qlStage iframe[hidden]{display:none}
+#qlStage:focus{outline:none}
+#qlBlank{position:relative;z-index:1}
+.ql-nav{z-index:5}
+.ql-vbtns{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:8px;z-index:6}
+.ql-vbtns .ql-drive{position:static;transform:none;cursor:pointer}
+.ql-embed .ql-vbtns{top:12px;bottom:auto}
+.card .thumb .tmedia{position:absolute;inset:0;z-index:0;display:flex;align-items:center;justify-content:center}
+.card .thumb .tmedia img,.card .thumb .tmedia video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.card .thumb .tmedia .tclip{opacity:0;z-index:1}.card .thumb .tmedia .tclip.on{opacity:1}
+#cardClips{font-size:12px}
+#qlProg{position:absolute;left:0;right:0;bottom:0;height:3px;background:#ffffff1a;z-index:4;pointer-events:none}#qlProg[hidden]{display:none}#qlProg i{display:block;height:100%;width:0;background:var(--acc,#ffb84d)}
