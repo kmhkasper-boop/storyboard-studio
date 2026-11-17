@@ -34,7 +34,7 @@
   let view = 'board';
   let undoStack = [], redoStack = [], lastKey = null, lastKeyTime = 0;
   let dirty = false;
-  const APP_VERSION = 'v4.1';
+  const APP_VERSION = 'v4.2';
   let prefs = Object.assign({ name: 'Lucas', autosave: true, zoom: 240, showText: true, cardClips: 'hover', driveEmbed: false }, safeJson(localStorage.getItem(LS_PREFS)) || {});
   const local = { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false };
   let remoteBase = null; // URL the doc was fetched from (media paths resolve relative to it)
@@ -1065,6 +1065,61 @@
     else downloadBlob(S.toEDLText(doc), 'text/plain', base + '-edit-list.txt');
   }
 
+  // ---------- v4.2: DaVinci Resolve export (OTIO + FCPXML per timeline, zipped) ----------
+  const resolveKey = () => 'sb-resolve:' + (local.name || 'nofolder') + '/' + (local.jsonPath || '') + '|' + (doc.title || '');
+  function probeDuration(entry, ms = 6000) {
+    return new Promise(async (res) => {
+      let done = false; const fin = (v) => { if (!done) { done = true; v0.removeAttribute('src'); v0.load(); res(v); } };
+      const v0 = document.createElement('video'); v0.preload = 'metadata'; v0.muted = true;
+      v0.onloadedmetadata = () => fin(isFinite(v0.duration) && v0.duration > 0 ? v0.duration : null); v0.onerror = () => fin(null);
+      setTimeout(() => fin(null), ms);
+      try { v0.src = await entryUrl(entry); } catch { fin(null); }
+    });
+  }
+  async function resolveDurations() {
+    const out = {}; if (!local.kind) return out;
+    const seen = new Set(); const want = [];
+    for (const p of allPages()) for (const m of [p.video, ...(p.takes || []), ...(p.cuts || []).map(c => c.media), doc.audio]) {
+      if (!m || !m.path || seen.has(m.path) || !S.isVideoMedia(m) && !(doc.audio && m === doc.audio)) continue; seen.add(m.path);
+      const e = localEntry(m.path); if (e) want.push([m.path, e]);
+    }
+    for (let i = 0; i < want.length; i += 6) await Promise.all(want.slice(i, i + 6).map(async ([path, e]) => { const d = await probeDuration(e); if (d) out[path] = d; }));
+    return out;
+  }
+  function exportResolveDialog() {
+    const saved = safeJson(localStorage.getItem(resolveKey())) || {};
+    const tls = S.resolveTimelines(doc, { fps: doc.fps || 24 });
+    const [aw, ah] = (doc.aspect || '16:9').split(':').map(Number); const W = aw >= ah ? 1920 : Math.round(1920 * aw / ah / 2) * 2, H = aw >= ah ? Math.round(1920 * ah / aw / 2) * 2 : 1920;
+    const root = el('input', { class: 'rs-root', value: saved.root || '', placeholder: '/Users/you/Google Drive/' + (local.name || 'Project folder'), style: { width: '100%' } });
+    const relink = el('input', { type: 'checkbox', class: 'rs-relink' }); relink.checked = !!saved.relink;
+    const fps = el('select', { class: 'rs-fps' }, [doc.fps ? String(doc.fps) : null, '23.976', '24', '25', '29.97', '30'].filter((v, i, a) => v && a.indexOf(v) === i).map(v => el('option', { value: v }, v + (doc.fps && v === String(doc.fps) ? ' (board)' : ''))));
+    fps.value = saved.fps || String(doc.fps || 24);
+    const checks = tls.map(t => { const c = el('input', { type: 'checkbox', class: 'rs-tl', dataset: { key: t.key } }); c.checked = !(saved.off || []).includes(t.key); return el('label', { class: 'rs-row' }, c, ' ' + t.file + ' ', el('span', { class: 'muted' }, '· ' + t.tracks.reduce((n, L) => n + L.length, 0) + ' clips' + (t.audio.length ? ' + song' : ''))); });
+    const status = el('div', { class: 'muted rs-status' });
+    const go = el('button', { class: 'primary rs-go', onclick: async () => {
+      const only = $$('.rs-tl', box).filter(c => c.checked).map(c => c.dataset.key); if (!only.length) { status.textContent = 'Pick at least one timeline.'; return; }
+      const r = root.value.trim().replace(/^['"]|['"]$/g, '');
+      if (!relink.checked && r && !r.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(r)) { status.textContent = 'The project folder must be a full path, e.g. /Users/lucas/…'; return; }
+      localStorage.setItem(resolveKey(), JSON.stringify({ root: r, relink: relink.checked, fps: fps.value, off: tls.map(t => t.key).filter(k => !only.includes(k)) }));
+      go.disabled = true; status.textContent = local.kind ? 'Reading clip lengths…' : 'Building…';
+      try {
+        const durations = await resolveDurations();
+        const pk = S.resolvePackage(doc, { fps: +fps.value, root: r, relink: relink.checked || !r, base: local.base || '', folderName: local.name || S.slug(doc.title), width: W, height: H, durations, only, exported: new Date().toLocaleString() });
+        const zip = S.zipStore(pk.files, new Date()); window.__sb.lastResolve = pk;
+        const a = el('a', { href: URL.createObjectURL(new Blob([zip], { type: 'application/zip' })), download: pk.dir + '.zip' }); document.body.append(a); a.click(); a.remove();
+        closeModal(); toast('🎞 ' + pk.timelines.length + ' Resolve timelines exported — see "HOW TO IMPORT.txt" in the zip', 5000);
+      } catch (e) { go.disabled = false; status.textContent = 'Export failed: ' + e.message; }
+    } }, 'Export .zip');
+    const box = el('div', { class: 'rs-dlg' }, el('h2', null, '🎞 DaVinci Resolve timelines'),
+      el('p', { class: 'muted' }, 'One timeline per section, video clips only (stills are left out). Each timeline comes as OTIO (best for Resolve 21: keeps markers with lyrics, prompts and notes) and as FCPXML 1.10 (fallback). Import: File › Import › Timeline… and select all the .otio files.'),
+      el('div', { class: 'fld' }, el('label', null, 'Project folder on your Mac' + (local.name ? ' (the folder "' + local.name + '" you opened)' : ' (the folder with this storyboard)')), root,
+        el('div', { class: 'muted', style: { fontSize: '12px', marginTop: '3px' } }, 'In Finder: right-click the folder, hold ⌥ Option, "Copy … as Pathname", paste here. Remembered for this board.')),
+      el('label', { class: 'rs-row' }, relink, ' Relink mode — don\u2019t write real paths; in Resolve select the offline clips › Relink Media › pick the folder (matches by file name)'),
+      el('div', { class: 'row' }, el('span', null, 'Frame rate '), fps, el('span', { class: 'muted' }, ' · ' + W + '×' + H + ' (' + (doc.aspect || '16:9') + ')')),
+      el('div', { class: 'fld' }, el('label', null, 'Timelines'), checks), status,
+      el('div', { class: 'modal-actions' }, el('button', { onclick: closeModal }, 'Cancel'), go));
+    modal(box);
+  }
   // ---------- v3: alternatives strip, cut timeline, edit-list import, variants ----------
   function altStrip(p, scene) {
     const grp = scene.pages.filter(q => q.id === (p.altOf || p.id) || q.altOf === (p.altOf || p.id));
@@ -1778,7 +1833,7 @@
 <li><b>Role</b> (insert / flash-forward / flashback) is shown on cards; ⚠ in the header lists song-time gaps between linear pages; ⏱ means the video prompt length differs from the page.</li>
 <li><b>☰ Cast manager</b>: characters, locked canon, reference sets and looks. <b>☰ Export</b> CSV / EDL for DaVinci Resolve.</li>
 <li>Every save raises <code>revision</code>; if the file changed since you opened it, you are asked before anything is overwritten.</li>
-<li><b>Video previews (v4.1):</b> with the project folder open, clips play in the big preview and on the cards (hover, or 🎞 clips: loop). Online with Drive links, press <b>▶ Play here</b> (or V) in the big preview to play the clip with Google's Drive player: it works when this browser is signed in to Google with access to the file, or when the file is shared “Anyone with the link”. Optional: run <code>make-previews.command</code> once for small, smooth preview clips (_previews folders).</li>
+<li><b>DaVinci Resolve (v4.2):</b> ☰ → 🎞 DaVinci Resolve timelines exports Edit, each storyline, Board, each character and Extras as separate timelines (video clips only). In Resolve: File › Import › Timeline…, select all the .otio files. See HOW TO IMPORT.txt in the zip.</li><li><b>Video previews (v4.1):</b> with the project folder open, clips play in the big preview and on the cards (hover, or 🎞 clips: loop). Online with Drive links, press <b>▶ Play here</b> (or V) in the big preview to play the clip with Google's Drive player: it works when this browser is signed in to Google with access to the file, or when the file is shared “Anyone with the link”. Optional: run <code>make-previews.command</code> once for small, smooth preview clips (_previews folders).</li>
 <li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser.</li>
 </ul>
 <p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>Space</code> big preview of the selected page or scene (Space / Esc / click outside closes; ←/→ pages, ↑/↓ scenes, Enter opens the drawer, V plays a Drive clip here; also the 👁 button on a card, swipe on touch) · <code>P</code> play (Space plays/pauses only inside Play mode) · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
@@ -2142,7 +2197,7 @@
   }
   const actions = {
     openFolder, openFile, sample: loadSample, new: newDoc, reload: () => reloadFromDisk(false), autolink: autoLinkDialog, importText: importTextDialog,
-    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), cast: () => doc && castManager(), exportCsv: () => doc && exportEdit('csv'), exportEdl: () => doc && exportEdit('edl'), exportEdlText: () => doc && exportEdit('txt'), importEdit: () => doc && importEditDialog({ mode: 'pages' }), variants: () => doc && variantManager(), exportAllVariants: () => doc && exportAllVariants(), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
+    downloadJson: () => doc && downloadJson(), exportMd: () => doc && exportMd(), cast: () => doc && castManager(), exportCsv: () => doc && exportEdit('csv'), exportEdl: () => doc && exportEdit('edl'), exportResolve: () => doc && exportResolveDialog(), exportEdlText: () => doc && exportEdit('txt'), importEdit: () => doc && importEditDialog({ mode: 'pages' }), variants: () => doc && variantManager(), exportAllVariants: () => doc && exportAllVariants(), print: () => doc && printBoard(), settings: () => doc && settingsDialog(), help: helpDialog
   };
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]'); if (a) { $('#menu').hidden = true; if (actions[a.dataset.act]) actions[a.dataset.act](); return; }
@@ -2221,6 +2276,6 @@
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // test/automation hook
-  window.__sb = { render: () => render(), APP_VERSION, thumbCache, badUrls, qlToggleEmbed, qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, get drawer() { return drawer; } };
+  window.__sb = { render: () => render(), APP_VERSION, thumbCache, badUrls, qlToggleEmbed, qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, exportResolveDialog, resolveDurations, lastResolve: null, get drawer() { return drawer; } };
   init();
 })();

@@ -392,3 +392,6 @@ body.ql-on{overflow:hidden}
 .card .thumb .tmedia .tclip{opacity:0;z-index:1}.card .thumb .tmedia .tclip.on{opacity:1}
 #cardClips{font-size:12px}
 #qlProg{position:absolute;left:0;right:0;bottom:0;height:3px;background:#ffffff1a;z-index:4;pointer-events:none}#qlProg[hidden]{display:none}#qlProg i{display:block;height:100%;width:0;background:var(--acc,#ffb84d)}
+/* v4.2 Resolve export dialog */
+.rs-dlg .rs-row { display: block; margin: 4px 0; cursor: pointer; }
+.rs-dlg .rs-status { min-height: 1.3em; margin-top: 6px; }

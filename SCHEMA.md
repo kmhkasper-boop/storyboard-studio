@@ -6,6 +6,8 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **v4.2 (app update, still `"version": 4`, no new fields):** ☰ → **🎞 DaVinci Resolve timelines** exports Edit / Story per storyline / Board / Character / Extras timelines as OTIO + FCPXML 1.10 (video only). It reads `video`, `takes`, `cuts`, `speed`, `start`/`end`, `storyline`, `storyOrder`, `role`, `characters`, `variants`, `status`, `pool`, `lyrics` and the prompts. Nothing new to write. Keep `path` set on clips: clips with only a `driveId` must be relinked by hand in Resolve.
+>
 > **v4.1 (app update, still `"version": 4`, no new fields):** clips play in the big preview and on the cards, and the Drive player can play Drive-only clips in the preview. Nothing changes in the file. One folder convention is new and optional: **preview clips** in `_previews/` folders (see Media object). Don't link `_previews` files in the storyboard; the app finds them by name.
 >
 > **What's new in v4** (`"version": 4`; every new field is optional):
@@ -382,6 +384,8 @@ Example:
 - **⏱ Generation too short (v3):** only when `genSeconds` is set and the page has no `cuts`. The clip needs `page duration × |speed|` seconds of source starting at `video.in` (default 0) and ending at `video.out` or the end of the generation. It warns when that is longer than what the generation has, or when `video.out` is past `genSeconds`. A generation **longer** than the page is normal (a 6 s clip trimmed to 2 s) and never warns. Without `genSeconds` there is no ⏱ warning; v1/v2 guessed from "(6 s, …)" in the prompt, which caused false warnings.
 
 ## Exports for DaVinci Resolve
+
+**v4.2: ☰ → 🎞 DaVinci Resolve timelines (.zip)** is the main export, with one timeline per view (Edit, each storyline, Board, each character, Extras) as `.otio` and `.fcpxml`. See README → DaVinci Resolve timelines. Media URLs are `file://<project folder>/<storyboard folder>/<path>`, which is why `path` matters.
 
 ☰ → **Export edit list CSV**, **Export EDL (CMX3600)** and **Export edit list (text)**.
 

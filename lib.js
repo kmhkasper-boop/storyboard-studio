@@ -1232,7 +1232,357 @@
     return { blocks, gaps, switches, lanes, start, end };
   }
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
+  // ---------- v4.2: DaVinci Resolve export (OTIO per timeline + FCPXML 1.10 fallback, zipped) ----------
+  const VIDEO_RE = /\.(mp4|m4v|mov|webm|mxf|avi|mkv)$/i;
+  const AUDIO_RE = /\.(mp3|wav|aiff?|m4a|aac|flac|ogg)$/i;
+  const isVideoMedia = (m) => !!m && VIDEO_RE.test(m.path || m.name || '');
+  /** Frame-rate details for 23.976 / 24 / 25 / 29.97 / 30 (and any integer rate). */
+  function fpsInfo(fps) {
+    fps = Number(fps) || 24;
+    if (Math.abs(fps - 23.976) < 0.01) return { fps: 24000 / 1001, label: '23.976', num: 1001, den: 24000, tcBase: 24 };
+    if (Math.abs(fps - 29.97) < 0.01) return { fps: 30000 / 1001, label: '29.97', num: 1001, den: 30000, tcBase: 30 };
+    const r = Math.round(fps); return { fps: r, label: String(r), num: 1, den: r, tcBase: r };
+  }
+  /** Resolve marker palette (approximate) for mapping storyline / scene colours to the nearest marker colour. */
+  const MARKER_COLORS = { RED: [229, 72, 77], ORANGE: [240, 140, 0], YELLOW: [245, 197, 24], GREEN: [63, 185, 80], CYAN: [34, 211, 238], BLUE: [59, 130, 246], PURPLE: [139, 92, 246], PINK: [244, 114, 182], MAGENTA: [217, 70, 239], WHITE: [240, 240, 240], BLACK: [20, 20, 20] };
+  /** Resolve clip colours (names Resolve uses) with an approximate RGB each. */
+  const CLIP_COLORS = { Orange: [235, 110, 1], Apricot: [255, 168, 51], Yellow: [226, 169, 0], Lime: [159, 198, 21], Olive: [94, 153, 32], Green: [68, 143, 101], Teal: [0, 152, 153], Navy: [21, 98, 132], Blue: [67, 117, 161], Purple: [153, 115, 160], Violet: [208, 86, 141], Pink: [233, 140, 181], Tan: [185, 175, 151], Beige: [196, 160, 124], Brown: [153, 102, 0], Chocolate: [140, 90, 63] };
+  function hexRgb(h) { const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(h || '').trim()); if (!m) return null; let x = m[1]; if (x.length === 3) x = x.split('').map(c => c + c).join(''); return [0, 2, 4].map(i => parseInt(x.slice(i, i + 2), 16)); }
+  function nearestColor(hex, table, fallback) {
+    const c = hexRgb(hex); if (!c) return fallback; let best = fallback, bd = Infinity;
+    for (const [k, v] of Object.entries(table)) { const d = (c[0] - v[0]) ** 2 + (c[1] - v[1]) ** 2 + (c[2] - v[2]) ** 2; if (d < bd) { bd = d; best = k; } }
+    return best;
+  }
+  function joinRel(base, rel) {
+    const out = [];
+    for (const x of (base ? base.split('/') : []).concat(String(rel || '').replace(/\\/g, '/').split('/'))) { if (!x || x === '.') continue; if (x === '..') out.pop(); else out.push(x); }
+    return out.join('/');
+  }
+  /** Absolute file:// URL for a board media item. opts.root = the project folder on Lucas's Mac (absolute), opts.base = folder of the
+   *  storyboard file inside it ('' = same folder). Without a root (relink mode) the URL points into a placeholder folder and Resolve relinks by file name. */
+  function mediaFileUrl(m, opts) {
+    const rel = m.path ? joinRel(opts.base || '', m.path) : 'Drive only/' + (m.name || m.driveId || 'clip');
+    const root = String(opts.root || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    const abs = (!opts.relink && root ? (root.startsWith('/') ? root : '/' + root) : '/RELINK/' + (opts.folderName || 'Storyboard media')) + '/' + rel;
+    return { url: 'file://' + abs.split('/').map(encodeURIComponent).join('/'), abs, rel, missing: !m.path };
+  }
+  const sanitizeName = (s) => String(s || '').replace(/[\/\\:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Timeline';
+  /** The clip(s) a page plays, as segments of record time: cuts loop to fill the page (like Play); else the page video or the picked take.
+   *  Segments whose media is a still become holes (video only). Returns [] when the page has no video at all. */
+  function pageVideoSegs(p, d) {
+    const sp = speedOf(p);
+    const srcOf = (m, dd, sv) => { const a = m && m.in !== undefined ? m.in : 0; const len = dd * Math.abs(sv); return sv < 0 && m && m.out !== undefined ? Math.max(0, m.out - len) : a; };
+    if (p.cuts && p.cuts.length) {
+      if (!p.cuts.some(c => isVideoMedia(c.media))) return [];
+      const per = p.cuts.map(c => num(c.duration) > 0 ? num(c.duration) : d / p.cuts.length); const out = []; let t = 0, k = 0, guard = 0;
+      while (t < d - 1e-6 && guard++ < 500) {
+        const i = k % p.cuts.length; const c = p.cuts[i]; const dd = Math.min(per[i], d - t); const sv = speedOf(c.speed ? c : null) !== 1 ? speedOf(c) : sp;
+        out.push(isVideoMedia(c.media) ? { media: c.media, t, dur: dd, srcIn: srcOf(c.media, dd, sv), speed: sv, cut: i + 1 } : { hole: true, t, dur: dd, cut: i + 1 });
+        t += dd; k++;
+      }
+      return out;
+    }
+    const clip = isVideoMedia(p.video) ? p.video : (p.takes || []).find(t => t.pick && isVideoMedia(t)) || null;
+    if (!clip) return [];
+    return [{ media: clip, t: 0, dur: d, srcIn: srcOf(clip, d, sp), speed: sp, take: clip !== p.video }];
+  }
+  /** Marker text for a page: everything a Resolve editor wants next to the clip. */
+  function pageNote(doc, p, extra) {
+    const sl = (doc.storylines || []).length ? storylineById(doc, storylineOf(doc, p)) : null;
+    const chars = (p.characters || []).map(r => { const c = (doc.characters || []).find(x => x.id === r.charId); return (c ? c.name : r.charId) + (r.note ? ' (' + r.note + ')' : ''); });
+    const sc = doc.scenes.find(s => s.pages.includes(p));
+    const sp = speedOf(p);
+    const lines = [
+      extra || '',
+      sl ? 'Storyline: ' + sl.name + (p.storyOrder ? ' #' + p.storyOrder : '') : '',
+      sc ? 'Scene: ' + sc.title : '',
+      p.start || p.end ? 'Song: ' + [p.start, p.end].filter(Boolean).join('–') : '',
+      'Status: ' + (p.status || '') + ((p.role || 'linear') !== 'linear' ? ' · ' + p.role : '') + (sp !== 1 ? ' · speed ' + Math.round(sp * 100) + '%' : '') + (p.retime ? ' · ' + p.retime : '') + (p.effect ? ' · fx ' + p.effect : ''),
+      lyricsFor(p, doc) ? 'Lyrics: ' + lyricsFor(p, doc) : '',
+      p.description ? 'Description: ' + p.description : '',
+      chars.length ? 'Characters: ' + chars.join(', ') : '',
+      p.videoPrompt ? 'Video prompt: ' + p.videoPrompt : '',
+      p.imagePrompt ? 'Image prompt: ' + p.imagePrompt : '',
+      p.notes ? 'Notes: ' + p.notes : '',
+      p.flag ? 'Flag: ' + p.flag : ''
+    ].filter(Boolean);
+    return lines.join('\n');
+  }
+  /** Builds the timeline models for the Resolve export. opts: { fps, timelines: {edit, stories, board, characters, extras} }.
+   *  A timeline = { name, key, tracks: [[item…] per video lane], markers: [{at, dur, name, note, color}], audio: [] } with items
+   *  { at, dur, media, srcIn, speed, name, page, color, markers:[{name, note, color}] } in seconds (frames are rounded on output). */
+  function resolveTimelines(doc, opts) {
+    opts = opts || {}; const want = Object.assign({ edit: true, stories: true, board: true, characters: true, extras: true }, opts.timelines || {});
+    const labels = pageLabels(doc); const ad = activeDoc(doc); const title = doc.title || 'Storyboard';
+    const slOf = (p) => (doc.storylines || []).length ? storylineById(doc, storylineOf(doc, p)) : null;
+    const colorOf = (p) => { const sl = slOf(p); return sl ? sl.color : ''; };
+    const pageName = (p) => 'Page ' + (labels.get(p.id) || '?') + (p.code ? ' · ' + p.code : '') + (p.title ? ' · ' + p.title : '');
+    const tls = [];
+    /** Lay a page's segments into lane `lane` at record time `at`. Returns true if it had video. */
+    function place(tl, p, at, d, lane, extra, nameSuffix) {
+      const segs = pageVideoSegs(p, d); if (!segs.length) return false;
+      while (tl.tracks.length <= lane) tl.tracks.push([]);
+      let first = true;
+      for (const sg of segs) {
+        if (sg.hole) continue;
+        const it = { at: at + sg.t, dur: sg.dur, media: sg.media, srcIn: sg.srcIn, speed: sg.speed, page: p, color: colorOf(p),
+          name: pageName(p) + (sg.cut ? ' · cut ' + sg.cut : '') + (nameSuffix || ''), markers: [] };
+        if (first) it.markers.push({ name: pageName(p) + (nameSuffix || ''), note: pageNote(doc, p, extra), color: nearestColor(colorOf(p), MARKER_COLORS, 'BLUE') });
+        first = false; tl.tracks[lane].push(it);
+      }
+      return true;
+    }
+    function seq(tl, list, at, gapAfter) { // list of {p, d?, extra?, suffix?}; returns end time
+      let t = at;
+      for (const x of list) { const d = x.d || pageDuration(x.p, doc); if (place(tl, x.p, t, d, 0, x.extra, x.suffix)) t += d; }
+      return t + (gapAfter || 0);
+    }
+    const mk = (key, name) => ({ key, name: title + ' · ' + name, short: name, tracks: [[]], markers: [], audio: [] });
+    const usedPages = allPages(ad).filter(p => p.status !== 'cut' && !p.pool);
+    // 1. Edit: song timeline of the active variant
+    if (want.edit) {
+      const tl = mk('edit', 'Edit' + ((doc.variants || []).length ? ' (' + ((doc.variants.find(v => v.id === doc.activeVariant) || {}).name || 'current') + ')' : ''));
+      // linear pages on the bottom track(s); inserts / flash-forwards / flashbacks on the tracks above, so they play over the base
+      const et = editTimeline(doc); const sorted = et.blocks.slice().sort((x, y) => x.start - y.start || x.order - y.order);
+      const lin = sorted.filter(b => (b.page.role || 'linear') === 'linear'), over = sorted.filter(b => (b.page.role || 'linear') !== 'linear');
+      const lay = (blocks, from) => { const ends = []; for (const b of blocks) { const d = Math.max(0.01, b.end - b.start); if (!pageVideoSegs(b.page, d).length) continue; let k = ends.findIndex(e => e <= b.start + 1e-3); if (k < 0) { k = ends.length; ends.push(0); } place(tl, b.page, b.start, d, from + k); ends[k] = b.end; } return ends.length; };
+      const nLin = lay(lin, 0); tl.overFrom = Math.max(1, nLin); lay(over, tl.overFrom);
+      for (const g of et.gaps) tl.markers.push({ at: g.from, dur: g.seconds, name: 'Song gap ' + fmtTime(g.from, true) + '–' + fmtTime(g.to, true), note: 'No shot covers this song time (' + g.seconds + ' s).', color: 'RED' });
+      for (const s of et.switches) { const sl = storylineById(doc, s.to); tl.markers.push({ at: s.at, dur: 0, name: '→ ' + sl.name, note: 'Storyline switch: ' + storylineById(doc, s.from).name + ' → ' + sl.name, color: nearestColor(sl.color, MARKER_COLORS, 'BLUE') }); }
+      if (doc.audio && doc.audio.path && AUDIO_RE.test(doc.audio.path)) tl.audio.push({ at: 0, dur: Math.max(et.end, 1), media: doc.audio, srcIn: 0, speed: 1, name: 'Song · ' + (doc.audio.name || doc.audio.path.split('/').pop()) });
+      tls.push(tl);
+    }
+    // 2. One timeline per storyline: story order; pages not in the edit follow after a marker
+    if (want.stories && (doc.storylines || []).length) {
+      for (const sl of storylineList(doc)) {
+        const pages = storyPages(doc, sl.id); if (!pages.some(p => pageVideoSegs(p, pageDuration(p, doc)).length)) continue;
+        const tl = mk('story-' + (sl.id || 'none'), 'Story – ' + sl.name);
+        const used = pages.filter(p => usageOf(doc, p.id).used), rest = pages.filter(p => !usageOf(doc, p.id).used);
+        let t = seq(tl, used.map(p => ({ p })), 0, 0);
+        const restV = rest.filter(p => pageVideoSegs(p, pageDuration(p, doc)).length);
+        if (restV.length) { t += 2; tl.markers.push({ at: t, dur: 0, name: 'Not in the edit', note: 'Pool, inactive alternatives and cut pages of ' + sl.name + ' follow.', color: 'WHITE' });
+          seq(tl, restV.map(p => ({ p, extra: 'NOT IN THE EDIT: ' + usageOf(doc, p.id).reason, suffix: ' (' + usageOf(doc, p.id).reason + ')' })), t); }
+        tls.push(tl);
+      }
+    }
+    // 3. Board: every page in board order, scene markers
+    if (want.board) {
+      const tl = mk('board', 'Board'); let t = 0;
+      for (const s of doc.scenes) {
+        const vids = s.pages.filter(p => pageVideoSegs(p, pageDuration(p, doc)).length); if (!vids.length) continue;
+        tl.markers.push({ at: t, dur: 0, name: 'Scene: ' + s.title + (s.active === false ? ' (inactive alternative)' : ''), note: [s.notes, s.pages.length + ' pages'].filter(Boolean).join('\n'), color: nearestColor(s.color, MARKER_COLORS, 'YELLOW') });
+        t = seq(tl, vids.map(p => { const u = usageOf(doc, p.id); return { p, extra: u.used ? '' : 'NOT IN THE EDIT: ' + u.reason, suffix: u.used ? '' : ' (' + u.reason + ')' }; }), t);
+      }
+      tls.push(tl);
+    }
+    // 4. One timeline per character (edit order, then their pages not in the edit)
+    if (want.characters) {
+      for (const c of doc.characters || []) {
+        const has = (p) => (p.characters || []).some(r => r.charId === c.id);
+        const used = usedPages.filter(has), rest = allPages(doc).filter(p => has(p) && !used.includes(p));
+        const all = used.concat(rest).filter(p => pageVideoSegs(p, pageDuration(p, doc)).length); if (!all.length) continue;
+        const tl = mk('char-' + c.id, 'Character – ' + c.name);
+        let t = seq(tl, used.map(p => ({ p })), 0);
+        const restV = rest.filter(p => all.includes(p));
+        if (restV.length) { t += 2; tl.markers.push({ at: t, dur: 0, name: 'Not in the edit', note: c.name + ' pages that are not in the current edit follow.', color: 'WHITE' }); seq(tl, restV.map(p => ({ p, extra: 'NOT IN THE EDIT: ' + usageOf(doc, p.id).reason, suffix: ' (' + usageOf(doc, p.id).reason + ')' })), t); }
+        tls.push(tl);
+      }
+    }
+    // 5. Extras: alternatives / other variants, takes not picked, cut pages, pool
+    if (want.extras) {
+      const tl = mk('extras', 'Extras'); let t = 0;
+      const section = (name, color, note, list) => { const vids = list.filter(x => pageVideoSegs(x.p, x.d || pageDuration(x.p, doc)).length); if (!vids.length) return; tl.markers.push({ at: t, dur: 0, name, note, color }); t = seq(tl, vids, t, 1); };
+      const variantsUsing = (p) => (doc.variants || []).filter(v => Object.values(v.pages || {}).includes(p.id) || Object.values(v.slots || {}).some(id => { const sc = doc.scenes.find(s => s.id === id); return sc && sc.pages.includes(p); })).map(v => v.name);
+      const alts = allPages(doc).filter(p => !usageOf(doc, p.id).used && /alternative/.test(usageOf(doc, p.id).reason));
+      section('Alternatives & other variants', 'PURPLE', 'Inactive alternatives (pages and scenes). The marker of each clip says which variant uses it.', alts.map(p => { const vs = variantsUsing(p); return { p, extra: (p.altLabel ? 'Alternative: ' + p.altLabel + '\n' : '') + (vs.length ? 'Used in variant: ' + vs.join(', ') : 'Not used by a saved variant'), suffix: ' (alt' + (vs.length ? ' · ' + vs.join(', ') : '') + ')' }; }));
+      const takes = []; for (const p of allPages(doc)) (p.takes || []).forEach((tk, i) => { if (!tk.pick && isVideoMedia(tk)) takes.push({ p, tk, i }); });
+      if (takes.length) {
+        tl.markers.push({ at: t, dur: 0, name: 'Takes not picked', note: takes.length + ' takes that are not the picked one.', color: 'ORANGE' });
+        for (const { p, tk, i } of takes) {
+          const d = rangeLen(tk) || num(tk.genSeconds) || pageDuration(p, doc);
+          const fake = Object.assign({}, p, { cuts: [], video: Object.assign({}, tk), takes: [], speed: 1 });
+          if (place(tl, fake, t, d, 0, 'Take ' + (i + 1) + ' of ' + pageName(p) + (tk.version ? ' · ' + tk.version : '') + (tk.tool ? ' · ' + tk.tool : '') + (tk.note ? '\nTake note: ' + tk.note : ''), ' · take ' + (i + 1) + (tk.version ? ' ' + tk.version : ''))) t += d;
+        }
+        t += 1;
+      }
+      section('Cut pages', 'RED', 'Pages with status "cut" (not in the edit).', allPages(doc).filter(p => p.status === 'cut').map(p => ({ p, extra: 'CUT' + (p.bridged ? ' (bridged)' : ''), suffix: ' (cut)' })));
+      section('Pool', 'GREEN', 'Pages in the pool: on the board, not meant for the edit (yet).', allPages(doc).filter(p => p.pool).map(p => ({ p, extra: 'POOL', suffix: ' (pool)' })));
+      if (tl.tracks[0].length) tls.push(tl);
+    }
+    tls.forEach((tl, i) => { tl.file = pad2(i + 1) + ' ' + sanitizeName(tl.short); });
+    return tls;
+  }
+  const xmlEsc = (s) => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/\r?\n/g, '&#10;'); // one line per element (newlines as &#10;)
+  /** Shared frame math + media table for one timeline. */
+  function frameItems(tl, opts) {
+    const F = fpsInfo(opts.fps); const fr = (s) => Math.round(s * F.fps + 1e-9);
+    const media = new Map(); // url -> {id, name, url, frames, missing}
+    const mediaOf = (m, needEnd) => {
+      const u = mediaFileUrl(m, opts); let e = media.get(u.url);
+      const known = opts.durations && (opts.durations[u.rel] || opts.durations[m.path]);
+      if (!e) { e = { id: 'r' + (media.size + 2), name: (m.name || u.rel.split('/').pop()), url: u.url, abs: u.abs, rel: u.rel, frames: known ? fr(known) : 0, known: !!known, missing: u.missing, driveId: m.driveId || '', gen: num(m.genSeconds) }; media.set(u.url, e); }
+      if (!e.known) e.frames = Math.max(e.frames, Math.ceil(needEnd - 1e-6), e.gen ? fr(e.gen) : 0);
+      return e;
+    };
+    const lanes = tl.tracks.map(items => items.map(it => {
+      const a = fr(it.at), b = Math.max(a + 1, fr(it.at + it.dur)); const dur = b - a; const sp = it.speed || 1;
+      const src = fr(it.srcIn || 0); const used = Math.max(1, Math.round(dur * Math.abs(sp)));
+      return Object.assign({}, it, { a, b, dur, src, used, sp, m: mediaOf(it.media, src + used) });
+    }).sort((x, y) => x.a - y.a));
+    // drop overlaps inside a lane (rounding) by trimming
+    for (const L of lanes) for (let i = 1; i < L.length; i++) if (L[i].a < L[i - 1].b) { L[i - 1].b = L[i].a; L[i - 1].dur = Math.max(1, L[i - 1].b - L[i - 1].a); }
+    const audio = (tl.audio || []).map(it => { const a = fr(it.at), dur = Math.max(1, fr(it.dur)); return Object.assign({}, it, { a, b: a + dur, dur, src: 0, used: dur, sp: 1, m: mediaOf(it.media, dur) }); });
+    const end = Math.max(1, ...lanes.flat().map(x => x.b), ...audio.map(x => x.b), ...tl.markers.map(m => fr(m.at) + 1));
+    return { F, fr, media, lanes, audio, end };
+  }
+  /** OpenTimelineIO JSON for one timeline (what Resolve 18.5+ imports with File > Import > Timeline; markers keep colour + note). */
+  function toOTIO(tl, opts) {
+    const X = frameItems(tl, opts); const rate = X.F.fps;
+    const RT = (v) => ({ OTIO_SCHEMA: 'RationalTime.1', rate, value: v });
+    const TR = (s, d) => ({ OTIO_SCHEMA: 'TimeRange.1', start_time: RT(s), duration: RT(d) });
+    const marker = (name, note, color, s, d) => ({ OTIO_SCHEMA: 'Marker.2', name: String(name).slice(0, 120), comment: note || '', color: color || 'BLUE', marked_range: TR(s, d || 0), metadata: { Resolve_OTIO: { Note: note || '' } } });
+    const ref = (m) => ({ OTIO_SCHEMA: 'ExternalReference.1', name: m.name, target_url: m.url, available_range: TR(0, Math.max(1, m.frames)), available_image_bounds: null, metadata: { storyboard_studio: { path: m.rel, driveId: m.driveId } } });
+    const clip = (it, audio) => ({
+      OTIO_SCHEMA: 'Clip.1', name: it.name, source_range: TR(it.sp < 0 ? it.src : it.src, it.dur), media_reference: ref(it.m),
+      effects: it.sp !== 1 ? [{ OTIO_SCHEMA: 'LinearTimeWarp.1', name: 'Speed', effect_name: 'LinearTimeWarp', time_scalar: it.sp, metadata: {} }] : [],
+      markers: audio ? [] : (it.markers || []).map(mk => marker(mk.name, mk.note, mk.color, it.src, 1)), enabled: true,
+      metadata: audio ? {} : { Resolve_OTIO: it.color ? { 'Clip Color': nearestColor(it.color, CLIP_COLORS, 'Blue') } : {}, storyboard_studio: { page: it.page ? it.page.id : '', speed: it.sp, storylineColor: it.color || '' } }
+    });
+    const gap = (d) => ({ OTIO_SCHEMA: 'Gap.1', name: '', source_range: TR(0, d), effects: [], markers: [], enabled: true, metadata: {} });
+    const track = (name, kind, items, audio) => { const ch = []; let t = 0; for (const it of items) { if (it.a > t) ch.push(gap(it.a - t)); ch.push(clip(it, audio)); t = it.b; } return { OTIO_SCHEMA: 'Track.1', name, kind, source_range: null, effects: [], markers: [], enabled: true, children: ch, metadata: {} }; };
+    const tracks = X.lanes.map((L, i) => track('V' + (i + 1) + (tl.overFrom ? (i < tl.overFrom ? ' linear' : ' inserts & flashes') : ''), 'Video', L, false)).concat(X.audio.length ? [track('A1', 'Audio', X.audio, true)] : []);
+    const o = { OTIO_SCHEMA: 'Timeline.1', name: tl.name, global_start_time: RT(3600 * X.F.tcBase * (X.F.num === 1 ? 1 : 1)),
+      metadata: { storyboard_studio: { timeline: tl.key, fps: X.F.label, exported: opts.exported || '' } },
+      tracks: { OTIO_SCHEMA: 'Stack.1', name: 'tracks', source_range: null, effects: [], enabled: true, metadata: {}, children: tracks,
+        markers: tl.markers.map(m => marker(m.name, m.note, m.color, X.fr(m.at), m.dur ? Math.max(1, X.fr(m.dur)) : 0)) } };
+    return JSON.stringify(o, null, 2) + '\n';
+  }
+  /** FCPXML 1.10 for one timeline (fallback; Resolve keeps clips, timing and speed but drops markers from FCPXML). */
+  function toFCPXML(tl, opts) {
+    const X = frameItems(tl, opts); const F = X.F; const t = (f) => f === 0 ? '0s' : (f * F.num) + '/' + F.den + 's';
+    const W = opts.width || 1920, H = opts.height || 1080;
+    const fmtName = 'FFVideoFormat' + (H >= 2160 ? '2160p' : H + 'p') + F.label.replace('.', '');
+    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<!DOCTYPE fcpxml>', '', '<fcpxml version="1.10">', '  <resources>',
+      `    <format id="r1" name="${xmlEsc(W === 1920 && H === 1080 ? fmtName : 'FFVideoFormatRateUndefined')}" frameDuration="${t(1)}" width="${W}" height="${H}" colorSpace="1-1-1 (Rec. 709)"/>`];
+    for (const m of X.media.values()) {
+      const aud = AUDIO_RE.test(m.rel);
+      out.push(`    <asset id="${m.id}" name="${xmlEsc(m.name)}" start="0s" duration="${t(Math.max(1, m.frames))}" hasVideo="${aud ? 0 : 1}"${aud ? '' : ' format="r1" videoSources="1"'} hasAudio="${aud ? 1 : 0}"${aud ? ' audioSources="1" audioChannels="2" audioRate="48000"' : ''}>`,
+        `      <media-rep kind="original-media" src="${xmlEsc(m.url)}"/>`, '    </asset>');
+    }
+    out.push('  </resources>', '  <library>', `    <event name="${xmlEsc((opts.eventName || 'Storyboard Studio'))}">`, `      <project name="${xmlEsc(tl.name)}">`,
+      `        <sequence format="r1" duration="${t(X.end)}" tcStart="${t(3600 * F.tcBase)}" tcFormat="NDF" audioLayout="stereo" audioRate="48k">`, '          <spine>');
+    // FCPXML clip timing: with a timeMap the clip's local time is the retimed time (start = source in / speed)
+    const clipXml = (it, indent, lane, offsetF, isAudio) => {
+      const sp = it.sp; const rev = sp < 0; const a = Math.abs(sp); const L = Math.max(1, it.m.frames);
+      const startLocal = sp === 1 ? it.src : rev ? Math.round((L - (it.src + it.used)) / a) : Math.round(it.src / a);
+      const lines = [`${indent}<asset-clip ref="${it.m.id}"${lane ? ` lane="${lane}"` : ''} offset="${t(offsetF)}" name="${xmlEsc(it.name)}" start="${t(startLocal)}" duration="${t(it.dur)}"${isAudio ? ' srcEnable="audio"' : ' srcEnable="video"'} tcFormat="NDF">`];
+      if (!isAudio && it.markers && it.markers.length) lines.push(`${indent}  <note>${xmlEsc(it.markers[0].note)}</note>`);
+      if (sp !== 1) {
+        const span = Math.round(L / a);
+        lines.push(`${indent}  <timeMap>`, `${indent}    <timept time="0s" value="${t(rev ? L : 0)}" interp="linear"/>`, `${indent}    <timept time="${t(span)}" value="${t(rev ? 0 : L)}" interp="linear"/>`, `${indent}  </timeMap>`);
+      }
+      if (!isAudio) for (const mk of it.markers || []) lines.push(`${indent}  <marker start="${t(startLocal)}" duration="${t(1)}" value="${xmlEsc(mk.name)}" note="${xmlEsc(mk.note)}"/>`);
+      return { lines, startLocal };
+    };
+    // primary storyline = lane V1 with gaps; higher lanes and the song are anchored to the spine element under their start
+    const spine = []; let cur = 0; const V1 = X.lanes[0] || [];
+    for (const it of V1) { if (it.a > cur) spine.push({ gap: true, a: cur, b: it.a }); spine.push({ it, a: it.a, b: it.b }); cur = it.b; }
+    if (cur < X.end) spine.push({ gap: true, a: cur, b: X.end });
+    const anchored = []; X.lanes.slice(1).forEach((L, li) => L.forEach(it => anchored.push({ it, lane: li + 1 }))); X.audio.forEach(it => anchored.push({ it, lane: -1, audio: true }));
+    for (const el of spine) {
+      const kids = anchored.filter(x => x.it.a >= el.a && (x.it.a < el.b || (el === spine[spine.length - 1])));
+      for (const k of kids) anchored.splice(anchored.indexOf(k), 1);
+      if (el.gap) {
+        out.push(`            <gap name="Gap" offset="${t(el.a)}" start="0s" duration="${t(el.b - el.a)}">`);
+        for (const k of kids) out.push(...clipXml(k.it, '              ', k.lane, k.it.a - el.a, k.audio).lines.concat(['              </asset-clip>']));
+        out.push('            </gap>');
+      } else {
+        const c = clipXml(el.it, '            ', 0, el.a, false); out.push(...c.lines);
+        for (const k of kids) out.push(...clipXml(k.it, '              ', k.lane, c.startLocal + (k.it.a - el.a), k.audio).lines.concat(['              </asset-clip>']));
+        out.push('            </asset-clip>');
+      }
+    }
+    // timeline markers have no place in an FCPXML sequence: they ride on the spine element under them
+    out.push('          </spine>', '        </sequence>', '      </project>', '    </event>', '  </library>', '</fcpxml>');
+    return reorderFcpChildren(out.join('\n')) + '\n';
+  }
+  /** DTD order inside asset-clip is note, timeMap, anchored clips, markers. Our writer emits note/timeMap/markers then anchored clips: move anchored clips before markers. */
+  function reorderFcpChildren(xml) {
+    // Process innermost-last: for each asset-clip block at a given indent, the anchored children (deeper asset-clips) come after its markers; swap.
+    const lines = xml.split('\n'); const res = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]; res.push(l);
+      const m = /^(\s*)<asset-clip /.exec(l); if (!m || /\/>\s*$/.test(l)) continue;
+      const ind = m[1]; const body = []; let j = i + 1;
+      while (j < lines.length && !(lines[j].startsWith(ind + '</asset-clip>') && lines[j].length === (ind + '</asset-clip>').length)) body.push(lines[j++]);
+      const markers = body.filter(x => x.startsWith(ind + '  <marker '));
+      const rest = body.filter(x => !markers.includes(x));
+      // rest = note/timeMap lines + anchored clips (deeper); place markers after anchored clips
+      res.push(...reorderFcpChildren(rest.join('\n')).split('\n').filter((x, k, arr) => !(x === '' && k === arr.length - 1)), ...markers);
+      i = j - 1;
+    }
+    return res.join('\n');
+  }
+  /** Plain-text guide that goes into the zip. */
+  function resolveReadme(doc, tls, opts) {
+    const F = fpsInfo(opts.fps);
+    return [
+      'Storyboard Studio → DaVinci Resolve', '===================================', '',
+      'Board: ' + (doc.title || '') + '   ·   ' + F.label + ' fps   ·   exported ' + (opts.exported || ''), '',
+      'Timelines in this package (only video clips; stills and image-only pages are left out):',
+      ...tls.map(tl => '  ' + tl.file + '   ' + tl.tracks.reduce((a, L) => a + L.length, 0) + ' clips' + (tl.audio.length ? ' + song' : '') + (tl.markers.length ? ', ' + tl.markers.length + ' timeline marker' + (tl.markers.length > 1 ? 's' : '') : '')), '',
+      'Import (DaVinci Resolve 21; 18.5 and later work the same):',
+      '  1. Unzip this file. Open (or create) your Resolve project.',
+      '  2. File > Import > Timeline… (Shift-Cmd-I).',
+      '  3. Open the folder "OTIO" and select ALL the .otio files (Cmd-A), then Open.',
+      '  4. Resolve asks once per timeline: keep "Automatically import source clips into media pool" on and click OK each time.',
+      '  5. If clips come in offline (red): select them in the Media Pool, click "Relink Media" (or right-click > Relink Selected Clips) and pick the',
+      '     project folder on your Mac. Resolve finds the files by name inside it.',
+      '', 'Markers: every clip carries a marker with the page number, title, storyline, song time, lyrics, description, prompts and notes',
+      '(open the marker to read the note). Timeline markers show scenes, storyline switches, song gaps and the sections of Extras.',
+      'Marker colours follow the storyline colours.', '',
+      'Fallback: the folder "FCPXML (fallback)" has the same timelines as FCPXML 1.10 (File > Import > Timeline, one file at a time).',
+      'Resolve keeps clips, timing and speed from FCPXML but drops its markers, so use OTIO first.', '',
+      'Media paths: ' + (opts.relink || !opts.root ? 'relink mode — the files point at a placeholder folder; relink once (step 5).' : 'absolute paths under ' + opts.root + '/'),
+      'clips.csv lists every clip with its path, Drive ID and length.', ''
+    ].join('\n');
+  }
+  /** Everything for the zip: [{name, data}] (strings), plus the timeline models. */
+  function resolvePackage(doc, opts) {
+    opts = Object.assign({ fps: doc.fps || 24 }, opts || {});
+    const tls = resolveTimelines(doc, opts).filter(t => !opts.only || opts.only.includes(t.key)); const dir = sanitizeName((doc.title || 'Storyboard') + ' – Resolve');
+    const files = []; const allMedia = new Map();
+    for (const tl of tls) {
+      files.push({ name: dir + '/OTIO/' + tl.file + '.otio', data: toOTIO(tl, opts) });
+      files.push({ name: dir + '/FCPXML (fallback)/' + tl.file + '.fcpxml', data: toFCPXML(tl, Object.assign({ eventName: doc.title }, opts)) });
+      for (const m of frameItems(tl, opts).media.values()) if (!allMedia.has(m.url)) allMedia.set(m.url, m);
+    }
+    const q = (v) => { v = String(v === undefined || v === null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    files.push({ name: dir + '/clips.csv', data: ['file,path,absolute,driveId,frames,lengthKnown'].concat([...allMedia.values()].map(m => [m.name, m.rel, m.abs, m.driveId, m.frames, m.known ? 'yes' : 'estimated'].map(q).join(','))).join('\n') + '\n' });
+    files.push({ name: dir + '/HOW TO IMPORT.txt', data: resolveReadme(doc, tls, opts) });
+    return { dir, files, timelines: tls, media: [...allMedia.values()] };
+  }
+  // tiny store-only zip (no compression; the text files are small), works in the browser and in node
+  const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(u8) { let c = 0xffffffff; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+  function zipStore(files, date) {
+    const enc = new TextEncoder(); const d = date || new Date();
+    const dosT = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosD = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const parts = [], central = []; let off = 0;
+    const u16 = (v) => [v & 255, (v >> 8) & 255], u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255];
+    for (const f of files) {
+      const name = enc.encode(f.name); const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data; const crc = crc32(data);
+      const head = [0x50, 0x4b, 3, 4, ...u16(20), ...u16(0x0800), ...u16(0), ...u16(dosT), ...u16(dosD), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)];
+      parts.push(Uint8Array.from(head), name, data);
+      central.push(Uint8Array.from([0x50, 0x4b, 1, 2, ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(dosT), ...u16(dosD), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), name);
+      off += head.length + name.length + data.length;
+    }
+    const cSize = central.reduce((a, x) => a + x.length, 0);
+    const end = Uint8Array.from([0x50, 0x4b, 5, 6, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cSize), ...u32(off), ...u16(0)]);
+    const all = parts.concat(central, [end]); const out = new Uint8Array(all.reduce((a, x) => a + x.length, 0)); let p = 0; for (const x of all) { out.set(x, p); p += x.length; }
+    return out;
+  }
 
-  const api = { STORY_COLORS, normStoryline, storylineList, storylineOf, storylineById, storyPages, setStoryOrder, setPageStoryline, addStoryline, removeStoryline, usageOf, unusedPages, editTimeline, walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { fpsInfo, mediaFileUrl, pageVideoSegs, resolveTimelines, toOTIO, toFCPXML, resolvePackage, zipStore, crc32, nearestColor, MARKER_COLORS, CLIP_COLORS, isVideoMedia, STORY_COLORS, normStoryline, storylineList, storylineOf, storylineById, storyPages, setStoryOrder, setPageStoryline, addStoryline, removeStoryline, usageOf, unusedPages, editTimeline, walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);
