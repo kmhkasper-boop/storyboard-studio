@@ -96,11 +96,12 @@
   <div class="ql-box">
     <div id="qlStage">
       <img id="qlImg" alt="" hidden draggable="false"><video id="qlVid" playsinline muted hidden></video><div id="qlBlank" hidden></div>
+      <a id="qlDrive" class="ql-drive" hidden target="_blank" rel="noopener" title="This clip is only on Google Drive: open it there to play">▶ Play in Drive</a>
       <button id="qlPrev" class="ql-nav" title="Previous page (←)">‹</button><button id="qlNext" class="ql-nav" title="Next page (→)">›</button>
     </div>
-    <div class="ql-cap">
-      <div id="qlHead"></div><div id="qlTitle"></div><div id="qlLyr"></div><div id="qlDesc"></div>
-      <div class="ql-actions"><span class="muted">Space / Esc / click outside to close · ←/→ pages · ↑/↓ scenes</span><button id="qlOpenDrawer" title="Open in drawer (Enter)">Open in drawer ⏎</button><button id="qlClose" title="Close (Space / Esc)">✕</button></div>
+    <div class="ql-cap" title="Space / Esc / click outside to close · ←/→ pages · ↑/↓ scenes · Enter = drawer">
+      <div class="ql-row"><div id="qlHead"></div><div class="ql-actions"><button id="qlMore" title="Show the full lyrics and description">more ▾</button><button id="qlOpenDrawer" title="Open in drawer (Enter)">Drawer ⏎</button><button id="qlClose" title="Close (Space / Esc)">✕</button></div></div>
+      <div class="ql-text"><span id="qlTitle"></span><span id="qlLyr"></span><span id="qlDesc"></span></div>
     </div>
   </div>
 </div>

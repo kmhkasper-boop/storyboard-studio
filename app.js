@@ -184,7 +184,31 @@
     if (m.url) bits.push(m.url.startsWith('data:') ? 'embedded image' : m.url.slice(0, 60));
     return bits.join(' · ');
   }
-  /** Fills a container with the best visual for a page (image, else video frame, else Drive thumb, else placeholder). */
+  /** v3.4: alternate Drive image URL (some browsers/accounts load one form and not the other). */
+  const driveLh3 = (id, w = 1600) => 'https://lh3.googleusercontent.com/d/' + encodeURIComponent(id) + '=w' + w;
+  const isVidMedia = (m) => !!m && (VID_EXT.test(m.path || m.name || '') || /^data:video\//i.test(m.url || '') || (!!m.url && VID_EXT.test(m.url.split(/[?#]/)[0])));
+  /** The clip a page plays: its video, else the picked take. */
+  const pageClip = (p) => p.video || (p.takes || []).find(t => t.pick) || null;
+  /** Ordered still-image URLs for one media item: the file itself (local / embedded / URL / relative), then Drive thumbnails in two URL forms. */
+  async function mediaStills(m, w, out = []) {
+    const add = (u) => { if (u && !out.includes(u)) out.push(u); };
+    if (!m) return out;
+    const r = await resolveMedia(m).catch(() => null);
+    if (r && r.kind !== 'drive' && !isVidMedia(m)) add(r.src);
+    if (m.driveId) { add(driveThumb(m.driveId, w)); add(driveLh3(m.driveId, w)); }
+    return out;
+  }
+  /** v3.4: THE visual resolver shared by board cards and the big preview.
+   *  stills: the page image (file, then Drive thumbnail); video: a playable clip; vstills: Drive thumbnails of the clip (poster). */
+  async function visualPlan(p, w) {
+    const im = p.image, vi = pageClip(p);
+    const stills = await mediaStills(im, w);
+    const vr = await resolveMedia(vi).catch(() => null);
+    const video = vr && vr.playable ? vr.src : null;
+    const vstills = []; if (vi && vi.driveId) { vstills.push(driveThumb(vi.driveId, w), driveLh3(vi.driveId, w)); }
+    return { im, vi, stills, video, vstills };
+  }
+  /** Fills a container with the best visual for a page (image, else video frame, else the clip's Drive thumbnail, else placeholder). */
   function fillThumb(box, p, { w = 640 } = {}) {
     const ph = (txt) => { box.querySelectorAll('img,video').forEach(n => n.remove()); if (!box.querySelector('.ph')) box.prepend(el('div', { class: 'ph' }, txt)); };
     const tryImg = (src, fallback) => {
@@ -192,25 +216,30 @@
       img.onerror = () => { img.remove(); fallback(); };
       img.src = src; box.prepend(img);
     };
+    const tryList = (list, fb) => list.length ? tryImg(list[0], () => tryList(list.slice(1), fb)) : fb();
     (async () => {
-      const im = p.image, vi = p.video;
-      const drivePh = (m) => () => ph(m && m.driveId ? 'Drive file not visible here. Sign in to Google in this browser, or open the folder locally.' : 'Missing file: ' + (m && m.path || ''));
-      const imgR = await resolveMedia(im).catch(() => null);
-      if (imgR) {
-        if (imgR.kind === 'drive') return tryImg(driveThumb(im.driveId, w), drivePh(im));
-        return tryImg(imgR.src, () => (im.driveId ? tryImg(driveThumb(im.driveId, w), drivePh(im)) : drivePh(im)()));
-      }
-      const vidR = await resolveMedia(vi).catch(() => null);
-      if (vidR && vidR.playable) {
-        const v = el('video', { preload: 'metadata', playsinline: true });
-        v.muted = true; v.src = vidR.src + '#t=0.1';
-        v.onerror = () => { v.remove(); vi.driveId ? tryImg(driveThumb(vi.driveId, w), drivePh(vi)) : ph('Missing video: ' + vi.path); };
-        box.prepend(v); return;
-      }
-      if (vi && vi.driveId) return tryImg(driveThumb(vi.driveId, w), drivePh(vi));
-      if (im || vi) return ph(local.kind ? 'Missing: ' + ((im || vi).path || '?') : 'Open the project folder to see this file');
-      ph('No image yet. Drop one here');
+      const v = await visualPlan(p, w); const { im, vi } = v;
+      const final = () => {
+        const m = (im && im.driveId) ? im : (vi && vi.driveId) ? vi : (im || vi);
+        if (!m) return ph('No image yet. Drop one here');
+        if (m.driveId) return ph('Drive file not visible here. Sign in to Google in this browser, or open the folder locally.');
+        ph(local.kind ? 'Missing: ' + (m.path || '?') : 'Open the project folder to see this file');
+      };
+      const tryVideo = (fb) => {
+        if (!v.video) return fb();
+        const vd = el('video', { preload: 'metadata', playsinline: true });
+        vd.muted = true; vd.src = v.video + '#t=0.1';
+        vd.onerror = () => { vd.remove(); fb(); };
+        box.prepend(vd);
+      };
+      tryList(v.stills, () => tryVideo(() => tryList(v.vstills, final)));
     })();
+  }
+  /** What the board card for a page is showing right now (a loaded image URL), so the preview can always show at least that. */
+  function cardVisual(id) {
+    const c = document.querySelector('.card[data-id="' + CSS.escape(id) + '"] .thumb');
+    const i = c && c.querySelector('img'); if (i && i.complete && i.naturalWidth > 0) return i.currentSrc || i.src;
+    return null;
   }
 
   // ---------- rendering ----------
@@ -1599,25 +1628,46 @@
     pl.elapsed = 0; await showStep(pl.i, 0); resume();
   }
   function songOn() { return !!$('#plAudio').getAttribute('src') && $('#plSong').checked; }
-  async function buildSegments(p) {
+  /** Segments to show for a page (one per cut, else one). Each carries `stills`, an ordered fallback list of image URLs
+   *  (v3.4: same resolver as the cards), and `driveVideo` when the clip only exists on Drive. */
+  async function buildSegments(p, w = 1600) {
     const d = dur(p); const pageSpeed = S.speedOf(p);
+    const clip = pageClip(p);
     const raw = p.cuts && p.cuts.length
       ? p.cuts.map(c => ({ media: c.media, dur: c.duration || d / p.cuts.length, speed: c.speed || pageSpeed, isCut: true }))
-      : [{ media: p.video || p.image, dur: d, speed: pageSpeed, isCut: false }];
+      : [{ media: clip || p.image, dur: d, speed: pageSpeed, isCut: false }];
+    const plan = await visualPlan(p, w);
     const segs = [];
     for (const sg of raw) {
-      let r = await resolveMedia(sg.media).catch(() => null);
-      let kind = 'blank';
-      if (r && r.playable && VID_EXT.test(sg.media.path || sg.media.name || sg.media.url || '')) kind = 'video';
-      else if (r && r.playable && sg.media === p.video) kind = 'video';
-      else if (r && r.playable) kind = 'image';
-      if (!sg.isCut && kind !== 'video') { // page without playable clip: fall back to image, then Drive poster
-        const ir = await resolveMedia(p.image).catch(() => null);
-        if (ir) { r = ir; kind = 'image'; } else if (r && r.kind === 'drive') kind = 'image';
-      } else if (r && r.kind === 'drive') kind = 'image';
-      segs.push(Object.assign({}, sg, { r, kind }));
+      const m = sg.media; const r = await resolveMedia(m).catch(() => null);
+      const vid = isVidMedia(m) || (!!m && m === clip && !sg.isCut);
+      let kind = 'blank', stills = [];
+      if (sg.isCut) {
+        if (r && r.playable && vid) kind = 'video';
+        stills = await mediaStills(m, w);              // the cut's own still / its Drive thumbnail first
+        if (vid && m.driveId && !stills.length) stills.push(driveThumb(m.driveId, w));
+        plan.stills.concat(plan.vstills).forEach(u => { if (!stills.includes(u)) stills.push(u); });
+      } else {
+        if (r && r.playable && vid) kind = 'video';
+        stills = plan.stills.concat(plan.vstills.filter(u => !plan.stills.includes(u)));
+        if (!vid && r && r.playable && !stills.includes(r.src)) stills.unshift(r.src);
+      }
+      if (kind !== 'video' && (stills.length || r)) kind = 'image';
+      const driveVideo = vid && m && m.driveId ? m.driveId : ''; // offered whenever the clip is not playing here
+      segs.push(Object.assign({}, sg, { r, kind, stills, driveVideo }));
     }
     return segs;
+  }
+  /** v3.4: load the first still that works; then the card's own picture; then give up (onFail). */
+  function loadStill(img, sg, p, onFail) {
+    const list = (sg.stills || []).slice(); const cv = cardVisual(p.id); if (cv && !list.includes(cv)) list.push(cv);
+    let k = 0; const token = img._tok = Math.random();
+    const next = () => {
+      if (img._tok !== token) return;
+      if (k >= list.length) { img.hidden = true; img.removeAttribute('src'); return onFail(); }
+      img.src = list[k++];
+    };
+    img.onerror = next; next();
   }
   async function showStep(i, offset) {
     pl.i = i; pl.elapsed = offset || 0; pl.seg = -1;
@@ -1658,6 +1708,7 @@
       img.hidden = true; vid.hidden = true; blank.textContent = ''; vid.pause();
       if (sg.kind === 'video') {
         if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
+        vid.onerror = () => { if (pl.segs[pl.seg] !== sg) return; vid.hidden = true; img.hidden = false; loadStill(img, sg, p, () => { blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || ''); }); };
         vid.muted = songOn() || !pl.playing; vid.hidden = false;
         const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed)));
         vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
@@ -1665,9 +1716,7 @@
         if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
       } else if (sg.kind === 'image') {
         img.classList.remove('kb'); void img.offsetWidth; img.style.setProperty('--kbdur', sg.dur + 's');
-        img.onerror = () => { img.hidden = true; blank.textContent = p.description || p.lyrics || ''; };
-        img.src = sg.r.kind === 'drive' ? driveThumb(sg.media.driveId || (p.image && p.image.driveId) || (p.video && p.video.driveId), 1920) : sg.r.src;
-        img.hidden = false; if (!sg.isCut) img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
+        img.hidden = false; loadStill(img, sg, p, () => { blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(image not available here)'); }); if (!sg.isCut) img.classList.add('kb'); img.style.animationPlayState = pl.playing ? 'running' : 'paused';
       } else blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)');
       return;
     }
@@ -1767,7 +1816,7 @@
     $('#qlHead').textContent = 'Page ' + pageNumber(id) + (i >= 0 ? ' / ' + seq.length : ' (inactive alternative)') + (p.code ? ' · code ' + p.code : '') + ' · ' + (Math.round(dur(p) * 100) / 100) + ' s' + (p.start ? ' · ♪ ' + [p.start, p.end].filter(Boolean).join('–') : '') + ' · ' + role + ' · ' + st + (sp !== 1 ? ' · ' + (sp < 0 ? '◀ ' : '') + Math.round(Math.abs(sp) * 100) + '%' : '') + (p.cuts.length ? ' · ' + p.cuts.length + ' cuts' : '') + ' · ' + f.scene.title;
     $('#qlTitle').textContent = p.title || '';
     $('#qlLyr').textContent = lyr(p) || '';
-    const d = p.description || ''; $('#qlDesc').textContent = d.length > 220 ? d.slice(0, 217) + '…' : d;
+    $('#qlDesc').textContent = p.description || ''; $('#qlook .ql-cap').classList.remove('open'); $('#qlMore').textContent = 'more ▾'; $('#qlMore').hidden = !(p.description || lyr(p) || p.title);
     $('#qlPrev').disabled = i <= 0; $('#qlNext').disabled = i < 0 || i >= seq.length - 1;
     const token = ql.token = Math.random(); cancelAnimationFrame(ql.raf);
     const segs = await buildSegments(p); if (token !== ql.token || !ql.open) return;
@@ -1784,15 +1833,28 @@
     const img = $('#qlImg'), vid = $('#qlVid'), blank = $('#qlBlank');
     if (force || k !== ql.seg) {
       ql.seg = k; img.hidden = true; vid.hidden = true; blank.hidden = true; vid.pause();
+      const dl = $('#qlDrive'); const showDrive = (on) => { dl.hidden = !(on && sg.driveVideo); if (sg.driveVideo) dl.href = driveView(sg.driveVideo); }; showDrive(sg.kind !== 'video');
+      const noMedia = () => { // only when nothing could be shown: clean placeholder, text stays in the caption strip
+        const anyMedia = !!(p.image || pageClip(p) || (p.cuts && p.cuts.length));
+        blank.hidden = false; blank.innerHTML = '';
+        blank.append(el('div', { class: 'ql-ph-icon' }, anyMedia ? '🖼' : '✎'), el('div', { class: 'ql-ph-txt' }, anyMedia ? (local.kind ? 'This page’s media isn’t in the opened folder and Drive didn’t answer.' : 'Media not visible here. Sign in to Google in this browser, or open the project folder.') : 'No image or clip yet'));
+      };
+      const fit = (wd, ht) => { if (wd && ht) $('#qlook').style.setProperty('--ql-ar', wd + ' / ' + ht); };
+      img.onload = () => fit(img.naturalWidth, img.naturalHeight);
       if (sg.kind === 'video') {
         if (vid.getAttribute('src') !== sg.r.src) vid.src = sg.r.src;
+        vid.poster = (sg.stills && sg.stills[0]) || '';
+        vid.onloadedmetadata = () => fit(vid.videoWidth, vid.videoHeight);
+        vid.onerror = () => { if (ql.segs[ql.seg] !== sg) return; vid.hidden = true; img.hidden = false; showDrive(true); loadStill(img, sg, p, noMedia); };
         vid.muted = true; vid.hidden = false; const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed))); vid.playbackRate = rate; vid.defaultPlaybackRate = rate;
         const seek = () => { try { vid.currentTime = videoTimeFor(sg, x, vid); } catch { } if (sg.speed > 0) vid.play().catch(() => {}); };
         if (vid.readyState >= 1) seek(); else vid.addEventListener('loadedmetadata', seek, { once: true });
       } else if (sg.kind === 'image') {
-        img.onerror = () => { img.hidden = true; blank.hidden = false; blank.textContent = p.description || p.lyrics || '(image not available)'; };
-        img.src = sg.r.kind === 'drive' ? driveThumb(sg.media.driveId || (p.image && p.image.driveId) || (p.video && p.video.driveId), 1920) : sg.r.src; img.hidden = false;
-      } else { blank.hidden = false; blank.textContent = (p.title ? p.title + ' — ' : '') + (p.description || '(no image yet)'); }
+        img.hidden = false; loadStill(img, sg, p, noMedia);
+      } else {
+        const cv = cardVisual(p.id); // last resort: whatever the card shows
+        if (cv) { img.hidden = false; loadStill(img, { stills: [cv] }, p, noMedia); } else noMedia();
+      }
       return;
     }
     if (sg.kind === 'video' && vid.readyState >= 1) {
@@ -1820,6 +1882,7 @@
   }
   function qlDrawer() { const id = ql.id; qlClose(); drawer = true; select(id); renderEditor(); }
   $('#qlook').addEventListener('click', (e) => { if (e.target.id === 'qlook') qlClose(); });
+  $('#qlMore').onclick = (e) => { e.stopPropagation(); const c = $('#qlook .ql-cap'); c.classList.toggle('open'); $('#qlMore').textContent = c.classList.contains('open') ? 'less ▴' : 'more ▾'; };
   $('#qlClose').onclick = qlClose; $('#qlPrev').onclick = () => qlStep(-1); $('#qlNext').onclick = () => qlStep(1); $('#qlOpenDrawer').onclick = qlDrawer;
   { let sx = null, sy = 0; const st = $('#qlStage');
     st.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') return; sx = e.clientX; sy = e.clientY; }); st.addEventListener('dragstart', (e) => e.preventDefault());

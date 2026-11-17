@@ -307,3 +307,24 @@ body.ql-on{overflow:hidden}
 @media (hover:none){.card .card-ql{width:40px;height:40px}}
 #qlStage img,#qlStage video{-webkit-user-drag:none;user-select:none}
 #qlStage img,#qlStage video{width:100%;height:100%;object-fit:contain}
+
+/* v3.4: media-first preview. The picture fills the stage; the caption is a slim strip (expandable). */
+#qlBlank{font-size:14px;max-width:420px;padding:24px;color:#888;display:flex;flex-direction:column;align-items:center;gap:10px}
+#qlBlank[hidden]{display:none}
+.ql-ph-icon{font-size:44px;opacity:.5}.ql-ph-txt{font-size:13px;line-height:1.4}
+.ql-drive{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:#000c;color:#fff;border:1px solid #fff6;border-radius:999px;padding:8px 16px;font-size:14px;font-weight:600;text-decoration:none;z-index:2}
+.ql-drive:hover{background:#000}.ql-drive[hidden]{display:none}
+.ql-cap{flex:none;padding:6px 12px 8px;font-size:13px;line-height:1.35;border-top:1px solid #ffffff14}
+.ql-row{display:flex;align-items:center;gap:8px;min-width:0}
+#qlHead{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.ql-actions{margin-top:0;flex:none;gap:6px}.ql-actions button{padding:2px 8px;font-size:12px}
+.ql-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#aaa}
+.ql-text>span:not(:empty)+span:not(:empty)::before{content:' · ';color:#666;font-style:normal}
+#qlTitle{font-size:13px;color:#eee}
+.ql-cap.open{max-height:38vh;overflow:auto}.ql-cap.open .ql-text{white-space:normal}
+.ql-cap.open .ql-text>span{display:block}.ql-cap.open .ql-text>span::before{content:none!important}
+@media (orientation:portrait){
+  .ql-box{height:auto;max-height:92vh;width:96vw}
+  #qlStage{flex:none;width:100%;aspect-ratio:var(--ql-ar,var(--aspect,16/9));max-height:calc(92vh - 64px)}
+  .ql-nav{width:38px;height:60px;font-size:26px}
+}
