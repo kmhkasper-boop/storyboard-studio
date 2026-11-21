@@ -34,7 +34,7 @@
   let view = 'board';
   let undoStack = [], redoStack = [], lastKey = null, lastKeyTime = 0;
   let dirty = false;
-  const APP_VERSION = 'v4.2';
+  const APP_VERSION = 'v4.3';
   let prefs = Object.assign({ name: 'Lucas', autosave: true, zoom: 240, showText: true, cardClips: 'hover', driveEmbed: false }, safeJson(localStorage.getItem(LS_PREFS)) || {});
   const local = { kind: null, root: null, name: '', files: new Map(), lower: new Map(), base: '', jsonPath: '', jsonHandle: null, jsonMtime: 0, jsonRev: undefined, jsonText: undefined, jsonName: '', single: false };
   let remoteBase = null; // URL the doc was fetched from (media paths resolve relative to it)
@@ -318,12 +318,12 @@
     renderFilters(); renderHeader(); renderSidebar(); renderVariantBar();
     if (view !== 'board') { sortables.splice(0).forEach(x => x.destroy()); $('#board').innerHTML = ''; } // one view in the DOM at a time (same page objects)
     if (view !== 'story' && storySortable) { storySortable.destroy(); storySortable = null; $('#storyView').innerHTML = ''; }
-    if (view !== 'edit') $('#editView').innerHTML = '';
+    if (view !== 'edit') { if (ep.playing) epPause(); $('#editView').innerHTML = ''; }
     if (view === 'board') renderBoard(); else if (view === 'story') renderStory(); else if (view === 'edit') renderEdit(); else renderScript();
     renderEditor(); updateSaveState();
   }
   function renderModeBadge() {
-    const b = $('#modeBadge');
+    const b = $('#modeBadge'); fileOnlyNotice();
     if (local.kind === 'fsa') b.textContent = '📂 ' + local.name + (local.jsonPath ? ' / ' + local.jsonPath : '') + ' · live save';
     else if (local.kind === 'files') b.textContent = '📂 ' + local.name + ' · read-only (Save downloads)';
     else if (local.single) b.textContent = '📄 ' + local.jsonName + ' · live save';
@@ -618,6 +618,7 @@
     const ruler = el('div', { class: 'ev-ruler', style: { width: W + 'px' } });
     for (let t = t0; t <= t1; t += (pps < 12 ? 10 : 5)) ruler.append(el('span', { class: 'tick', style: { left: x(t) + 'px' } }, S.fmtTime(t)));
     const lanes = tl.lanes.filter(l => (l.count || !l.implicit) && !hidden.has(l.id));
+    const E = epBuild(tl, W, t0, pps, x);
     const laneEls = lanes.map(l => {
       const lane = el('div', { class: 'ev-lane', dataset: { id: l.id }, style: { width: W + 'px', '--sl': l.color } });
       for (const b of tl.blocks.filter(b => b.storyline === l.id)) {
@@ -625,7 +626,7 @@
         const blk = el('div', { class: 'ev-block' + (p.id === selected ? ' sel' : '') + (b.timed ? '' : ' untimed') + (p.role && p.role !== 'linear' ? ' r-' + p.role : ''), dataset: { id: p.id }, tabindex: 0, style: { left: x(b.start) + 'px', width: w + 'px' },
           title: 'Page ' + labels.get(p.id) + (p.title ? ' · ' + p.title : '') + '\n' + S.fmtTime(b.start, true) + '–' + S.fmtTime(b.end, true) + (b.timed ? '' : ' (no song time: placed after the previous shot by duration)') + '\nClick = select · Space = preview · double-click = drawer' },
           el('span', { class: 'n' }, labels.get(p.id)), w > 40 ? el('span', { class: 't' }, p.title || p.code || '') : null);
-        blk.addEventListener('click', () => select(p.id));
+        blk.addEventListener('click', (e) => { select(p.id); const r = lane.getBoundingClientRect(); epSeek(t0 + (e.clientX - r.left) / pps); });
         blk.addEventListener('dblclick', () => { drawer = true; select(p.id); renderEditor(); });
         lane.append(blk);
       }
@@ -633,18 +634,258 @@
     });
     const gapEls = tl.gaps.map(g => el('div', { class: 'ev-gap', title: 'Song gap: no storyline has a shot ' + S.fmtTime(g.from, true) + '–' + S.fmtTime(g.to, true) + ' (' + g.seconds + ' s)', style: { left: x(g.from) + 'px', width: Math.max(2, (g.to - g.from) * pps) + 'px' } }, el('span', null, 'gap ' + g.seconds + 's')));
     const swEls = tl.switches.map(s => el('div', { class: 'ev-switch', style: { left: x(s.at) + 'px' }, title: 'Storyline switch at ' + S.fmtTime(s.at, true) }));
-    const track = el('div', { class: 'ev-track', style: { width: W + 'px' } }, ruler, el('div', { class: 'ev-lanes' }, laneEls, gapEls, swEls));
-    const names = el('div', { class: 'ev-names' }, el('div', { class: 'ev-name ruler-pad' }), lanes.map(l => el('div', { class: 'ev-name', style: { '--sl': l.color } }, el('span', { class: 'sw' }), l.name)));
-    box.append(...[head, el('div', { class: 'ev-body' }, names, el('div', { class: 'ev-scroll' }, track)),
+    const track = el('div', { class: 'ev-track', style: { width: W + 'px' } }, ruler, el('div', { class: 'ev-lanes' }, laneEls, gapEls, swEls), E.wave, E.ph);
+    const names = el('div', { class: 'ev-names' }, el('div', { class: 'ev-name ruler-pad' }), lanes.map(l => el('div', { class: 'ev-name', style: { '--sl': l.color } }, el('span', { class: 'sw' }), el('span', { class: 'ev-lname' }, l.name), E.laneMS(l.id))), E.songName);
+    const scroll = el('div', { class: 'ev-scroll' }, track); epWireSeek(track, scroll);
+    box.append(...[head, el('div', { class: 'ev-top' }, ep.mon, E.transport), el('div', { class: 'ev-body' }, names, scroll),
       !doc.storylines.length ? el('p', { class: 'muted ev-hint' }, 'This board has no storylines yet, so everything is one lane. Add storylines with ✎ Storylines (Story tab) and pick one per page.') : null,
-      el('p', { class: 'muted ev-hint' }, 'Blocks sit at their song time (dashed = no song time, placed by duration after the previous shot). The edit order is still the board order: reorder there. Hidden lanes: ' + (hidden.size ? [...hidden].map(id => S.storylineById(doc, id).name).join(', ') : 'none') + '.')].filter(Boolean));
+      el('p', { class: 'muted ev-hint' }, 'Blocks sit at their song time (dashed = no song time, placed by duration after the previous shot). The edit order is still the board order: reorder there. Hidden lanes: ' + (hidden.size ? [...hidden].map(id => S.storylineById(doc, id).name).join(', ') : 'none') + '. Click the ruler, the song lane or a block to jump there; drag to scrub. P = play / pause.')].filter(Boolean));
+    epPlayhead(); epTransportState(); epFrame(true);
   }
 
+  // ---------- v4.3: Edit-tab playback with the song as master clock, waveform, clip-sound mixer ----------
+  const ep = { playing: false, t: 0, prog: null, segs: new Map(), audio: new Audio(), song: { src: '', name: '', kind: '', note: '', key: '', peaks: null, seconds: 0 }, mix: S.defaultMix(), mixKey: '',
+    mon: null, vids: [], act: 0, img: null, cur: '', raf: 0, clock: 0, clockT: 0, geo: null, ph: null, lastSeek: 0, codec: new Map(), loadTok: 0 };
+  ep.audio.preload = 'auto';
+  const boardKey = () => (local.name || '') + '/' + (local.jsonPath || local.jsonName || '') + '|' + (doc ? doc.title || '' : '');
+  function epMixLoad() { const k = 'sbs.mix:' + boardKey(); if (ep.mixKey !== k) { ep.mixKey = k; ep.mix = S.normMix(safeJson(localStorage.getItem(k))); } return ep.mix; }
+  function epMixSave() { try { localStorage.setItem(ep.mixKey, JSON.stringify(ep.mix)); } catch { } epApplyAudio(); }
+  function epMonitor() {
+    if (ep.mon) return ep.mon;
+    const mk = () => { const v = el('video', { class: 'ev-v', playsinline: '', preload: 'auto', hidden: true }); v.muted = true; v.playsInline = true; return v; };
+    ep.vids = [mk(), mk()]; ep.img = el('img', { class: 'ev-img', alt: '', hidden: true });
+    ep.black = el('div', { class: 'ev-black' }); ep.cap = el('div', { class: 'ev-cap' }); ep.warn = el('div', { class: 'ev-warn', hidden: true });
+    ep.mon = el('div', { class: 'ev-monitor' }, el('div', { class: 'ev-screen', id: 'evScreen' }, ep.black, ep.img, ...ep.vids, ep.warn), ep.cap);
+    ep.vids.forEach(v => {
+      v.addEventListener('error', () => epClipFailed(v, v.error && v.error.code));
+      v.addEventListener('loadeddata', () => { if (!v.videoWidth) epClipFailed(v, 'novideo'); else if (!ep.playing) epFrame(false); });
+      v.addEventListener('loadedmetadata', () => epFrame(false)); v.addEventListener('seeked', () => { if (!ep.playing) epFrame(false); });
+    });
+    ep.audio.addEventListener('ended', () => { if (ep.playing) epPause(); });
+    return ep.mon;
+  }
+  /** A clip that can't play here: try its next source (the _previews copy), else show its still and say why, once per clip. */
+  function epClipFailed(v, code) {
+    const src = v.getAttribute('src'); if (!src) return; markBad(src);
+    const name = v._name || 'this clip';
+    const why = code === 4 || code === 'novideo' ? 'Chrome can\u2019t decode its video (codec, e.g. ProRes or 10-bit HEVC)' : code === 2 ? 'the file couldn\u2019t be read (still downloading from Drive?)' : 'it failed to load';
+    ep.codec.set(name, why); v.removeAttribute('src'); v._src = ''; v.hidden = true; ep.cur = '';
+    if (code === 4 || code === 'novideo') toast('⚠ ' + name + ': ' + why + '. Run make-previews.command (in the kit) to make playable preview copies, or export it as H.264 MP4.', 7000);
+    epFrame(true);
+  }
+  /** v4.3: say clearly when a clip can't be decoded by this browser (ProRes, 10-bit HEVC…), once per clip. */
+  const codecSaid = new Set();
+  function codecWarn(m, code) {
+    if (code !== 4 && code !== 3) return; const name = m && (m.name || (m.path || '').split('/').pop()); if (!name || codecSaid.has(name)) return; codecSaid.add(name);
+    ep.codec.set(name, 'this browser can’t decode its video (codec, e.g. ProRes or 10-bit HEVC)');
+    toast('⚠ ' + name + ' can’t play in this browser (codec, e.g. ProRes or 10-bit HEVC). Run make-previews.command (in the kit) to make playable preview copies, or export it as H.264 MP4.', 8000);
+  }
+  async function epSegsFor(p) {
+    const have = ep.segs.get(p.id); if (have) return have; // an array, or the pending promise
+    const gen = ep.segGen; const pr = buildSegments(p, 1280).catch(() => []).then(s => { if (ep.segGen === gen) ep.segs.set(p.id, s); return s; }); ep.segs.set(p.id, pr); return pr;
+  }
+  function epEnd() { const P = ep.prog; return Math.max(P ? P.end : 0, ep.song.seconds || 0, ep.audio.duration && isFinite(ep.audio.duration) ? ep.audio.duration : 0); }
+  function epNow() {
+    if (ep.playing && ep.audio.getAttribute('src') && ep.audio.readyState >= 2 && !ep.audio.paused) return ep.audio.currentTime; // the song is the clock
+    return ep.playing ? ep.clockT + (performance.now() - ep.clock) / 1000 : ep.t;
+  }
+  function epApplyAudio() {
+    const m = ep.mix; ep.audio.muted = !m.song;
+    ep.vids.forEach(v => { if (!v.hidden && v._page) v.muted = !(ep.playing && v._speed > 0 && S.clipAudible(m, v._page, v._lane)); else v.muted = true; });
+    epTransportState();
+  }
+  function epTransportState() {
+    const m = ep.mix; const b = (id) => document.getElementById(id);
+    if (b('evPlay')) b('evPlay').textContent = ep.playing ? '⏸' : '▶';
+    if (b('evSongOnly')) { b('evSongOnly').classList.toggle('on', m.songOnly); b('evSongOnly').textContent = m.songOnly ? '🔇 Clips muted · song only' : '🔊 Clip sound on'; }
+    if (b('evSongMute')) { b('evSongMute').classList.toggle('off', !m.song); b('evSongMute').textContent = m.song ? '🎵 Song on' : '🎵 Song muted'; }
+    $$('.ev-ms').forEach(x => { const k = x.dataset.kind, id = x.dataset.id, want = x.dataset.v; const cur = k === 'lane' ? m.lanes[id] : m.clips[id]; x.classList.toggle('on', cur === want); });
+    $$('.ev-block').forEach(x => { const c = m.clips[x.dataset.id]; x.classList.toggle('m-mute', c === 'mute'); x.classList.toggle('m-solo', c === 'solo'); });
+  }
+  function epSetMix(kind, id, val) { const o = kind === 'lane' ? ep.mix.lanes : ep.mix.clips; if (o[id] === val) delete o[id]; else { o[id] = val; if (val === 'solo' && ep.mix.songOnly) { ep.mix.songOnly = false; toast('Clip sound switched on for the solo'); } } epMixSave(); }
+  /** Song for this board: a file Lucas picked or dropped (kept in this browser), else the board's song (doc.audio) from the folder or a URL,
+   *  else the only audio file in the open folder. Drive-only songs can't be streamed by another site (Google blocks it). */
+  async function epLoadSong() {
+    const key = boardKey() + '|' + (doc.audio ? doc.audio.path || doc.audio.driveId || '' : ''); if (ep.song.key === key) return; const tok = ++ep.loadTok;
+    let src = '', name = '', kind = '', note = '';
+    const saved = await idbGet('song:' + boardKey()).catch(() => null);
+    if (saved && saved.blob) { src = URL.createObjectURL(saved.blob); name = saved.name || 'song'; kind = 'saved'; }
+    else if (doc.audio && (doc.audio.path || doc.audio.url || doc.audio.driveId)) {
+      const r = await resolveMedia(doc.audio).catch(() => null); name = doc.audio.name || (doc.audio.path || '').split('/').pop() || 'song';
+      if (r && r.playable) { src = r.src; kind = r.kind; } else note = doc.audio.path && !local.kind ? 'The song is in the project folder: open the folder (📂) or load the song file here.' : doc.audio.driveId ? 'The song is only on Drive; Google doesn\u2019t let other sites play Drive files. Open the project folder or load the song file here.' : 'Song file “' + name + '” not found in the folder.';
+    } else if (local.kind) {
+      const auds = Array.from(local.files.values()).filter(e => e.type === 'audio' && !e.session);
+      if (auds.length === 1) { src = await entryUrl(auds[0]); name = auds[0].name; kind = 'folder'; note = 'Using the only audio file in the folder. Set it as the song in ⚙ Project settings to keep it.'; }
+    }
+    if (tok !== ep.loadTok) return;
+    ep.song = { src, name, kind, note, key, peaks: null, seconds: 0 };
+    if (ep.audio.getAttribute('src') !== src) { if (src) ep.audio.src = src; else ep.audio.removeAttribute('src'); }
+    if (src) epPeaks(src, tok);
+    if (view === 'edit') renderEdit();
+  }
+  const peakCache = new Map();
+  async function epPeaks(src, tok) {
+    try {
+      let pk = peakCache.get(src);
+      if (!pk) {
+        const buf = await (await fetch(src)).arrayBuffer(); const AC = window.AudioContext || window.webkitAudioContext; const ac = new AC();
+        const ab = await ac.decodeAudioData(buf); ac.close && ac.close();
+        const chans = []; for (let c = 0; c < Math.min(2, ab.numberOfChannels); c++) chans.push(ab.getChannelData(c));
+        pk = S.audioPeaks(chans, ab.sampleRate, 50); peakCache.set(src, pk);
+      }
+      if (tok !== ep.loadTok) return; ep.song.peaks = pk; ep.song.seconds = pk.seconds; if (view === 'edit') renderEdit();
+    } catch (e) { if (tok === ep.loadTok) { ep.song.note = 'Couldn\u2019t draw the waveform (' + e.message + '); the song still plays.'; if (view === 'edit') renderEdit(); } }
+  }
+  async function epSaveSong(file) {
+    if (!file || !(/^audio\//.test(file.type) || /\.(mp3|wav|aiff?|m4a|aac|flac|ogg)$/i.test(file.name))) return toast('That is not an audio file');
+    await idbSet('song:' + boardKey(), { blob: file, name: file.name, at: Date.now() }).catch(e => toast('Could not keep the song in this browser: ' + e.message));
+    ep.song.key = ''; await epLoadSong(); toast('🎵 ' + file.name + ' loaded under the edit (kept in this browser for this board)');
+  }
+  function epSongDialog() {
+    const inp = el('input', { type: 'file', accept: 'audio/*,.wav,.mp3,.m4a,.aif,.aiff,.flac', hidden: true, onchange: () => { closeModal(); epSaveSong(inp.files[0]); } });
+    modal(el('div', null, el('h2', null, '🎵 Song under the edit'), inp,
+      el('p', { class: 'muted' }, 'Now: ' + (ep.song.src ? ep.song.name + ' (' + ({ saved: 'kept in this browser', local: 'from the project folder', folder: 'from the project folder', url: 'web link', remote: 'online' }[ep.song.kind] || ep.song.kind) + ')' : 'no song loaded')),
+      el('div', { class: 'modal-actions', style: { justifyContent: 'flex-start', flexWrap: 'wrap' } },
+        el('button', { class: 'primary ev-song-file', onclick: () => inp.click() }, 'Choose audio file…'),
+        hasFolder() && local.kind === 'fsa' ? el('button', { onclick: () => pickFromFolder(null, 'audio', (rel) => { mutate(d => { d.audio = { path: rel, url: '', driveId: '', name: rel.split('/').pop() }; }); idbSet('song:' + boardKey(), null).catch(() => {}); ep.song.key = ''; closeModal(); epLoadSong(); }) }, 'Pick from the project folder (saved as the board\u2019s song)') : null,
+        ep.song.kind === 'saved' ? el('button', { class: 'danger', onclick: async () => { await idbSet('song:' + boardKey(), null).catch(() => {}); ep.song.key = ''; closeModal(); epLoadSong(); } }, 'Forget the kept song') : null,
+        el('button', { onclick: closeModal }, 'Close')),
+      el('p', { class: 'muted', style: { fontSize: '12px' } }, 'Tip: you can also drop an audio file on the song lane. A chosen file stays in this browser (not in the board file). Song time = the page song times, so the file should start at 0:00 of the song.')));
+  }
+  function epSeek(t) {
+    ep.t = Math.max(0, Math.min(epEnd() || 0, t)); ep.clockT = ep.t; ep.clock = performance.now();
+    if (ep.audio.getAttribute('src')) { try { ep.audio.currentTime = ep.t; } catch { } }
+    epFrame(true); epPlayhead();
+  }
+  function epPlay() {
+    if (!ep.prog || !ep.prog.items.length) return toast('No shots on the song timeline yet');
+    if (ep.t >= epEnd() - 0.05) ep.t = Math.max(0, ep.prog.start);
+    ep.playing = true; ep.clockT = ep.t; ep.clock = performance.now();
+    if (ep.audio.getAttribute('src')) { try { ep.audio.currentTime = ep.t; } catch { } ep.audio.play().catch(() => { /* no song: clock runs on its own */ }); }
+    epApplyAudio(); cancelAnimationFrame(ep.raf); const loop = () => { if (!ep.playing) return; epTick(); ep.raf = requestAnimationFrame(loop); }; ep.raf = requestAnimationFrame(loop); epFrame(true);
+  }
+  function epPause() {
+    ep.t = epNow(); ep.playing = false; cancelAnimationFrame(ep.raf); ep.audio.pause(); ep.vids.forEach(v => { v.pause(); }); epApplyAudio(); epPlayhead();
+  }
+  function epToggle() { ep.playing ? epPause() : epPlay(); }
+  function epTick() {
+    ep.t = epNow(); if (ep.t >= epEnd()) { ep.t = epEnd(); epPause(); return; }
+    epFrame(false); epPlayhead(true);
+  }
+  function epPlayhead(follow) {
+    if (!ep.geo || !ep.ph || !ep.ph.isConnected) return; const x = (ep.t - ep.geo.t0) * ep.geo.pps; ep.ph.style.transform = 'translateX(' + x + 'px)';
+    const tm = document.getElementById('evTime'); if (tm) tm.textContent = S.fmtTime(ep.t, true) + ' / ' + S.fmtTime(epEnd(), true);
+    if (follow) { const sc = ep.ph.closest('.ev-scroll'); if (sc && (x < sc.scrollLeft + 20 || x > sc.scrollLeft + sc.clientWidth - 60)) sc.scrollLeft = Math.max(0, x - sc.clientWidth * 0.25); }
+  }
+  /** Draw the picture for ep.t: black in gaps, the clip at the right source time (speed, in/out, cuts), or the page still. */
+  function epFrame(force) {
+    if (!ep.mon || !ep.prog) return; const t = ep.t; const it = S.programAt(ep.prog.items, t);
+    const showOnly = (node) => { [ep.img, ...ep.vids].forEach(n => { if (n !== node) n.hidden = true; }); if (node) node.hidden = false; };
+    if (!it || !it.block) {
+      if (ep.cur !== 'black') { ep.cur = 'black'; showOnly(null); ep.vids.forEach(v => v.pause()); ep.cap.textContent = it || (t > ep.prog.start && t < ep.prog.end) ? 'song gap — no shot here' : (t < ep.prog.start ? 'before the first shot' : 'end'); ep.warn.hidden = true; }
+      return;
+    }
+    const b = it.block, p = b.page, d = b.end - b.start, x = t - b.start;
+    const segs = ep.segs.get(p.id); if (!Array.isArray(segs)) { epSegsFor(p).then(() => { const now = ep.prog && S.programAt(ep.prog.items, ep.t); if (now && now.block && now.block.id === b.id) epFrame(true); }); return; }
+    if (!segs.length) { if (ep.cur !== p.id + ':none') { ep.cur = p.id + ':none'; showOnly(null); ep.cap.textContent = epCaption(p, null); } return; }
+    const durs = segs.map(s => (s.isCut ? s.dur : d)); const c = S.cutAt(durs, d, x); const sg = segs[c.k]; const key = p.id + ':' + c.k + ':' + c.loop;
+    const srcs = sg.kind === 'video' ? usable(sg.srcs || []) : [];
+    if (srcs.length) {
+      const src = srcs[0]; let v = ep.vids.find(z => z._src === src) || ep.vids[(ep.act + 1) % 2];
+      if (v._src !== src) { v._src = src; v._fresh = true; v.src = src; v._name = (sg.media && (sg.media.name || (sg.media.path || '').split('/').pop())) || 'clip'; }
+      v._page = p.id; v._lane = b.storyline; v._speed = sg.speed;
+      const rate = Math.min(16, Math.max(0.0625, Math.abs(sg.speed || 1))); if (v.playbackRate !== rate) { v.playbackRate = rate; v.defaultPlaybackRate = rate; }
+      if (v.readyState >= 1) {
+        const want = S.clipTime(sg.media, sg.speed || 1, c.x, durs[c.k], v.duration); if (v._fresh || v._key !== key) { v._fresh = false; v._key = key; force = true; }
+        if (!ep.playing || sg.speed < 0) { if (!v.paused) v.pause(); if ((force || Math.abs(v.currentTime - want) > 0.04) && !v.seeking && performance.now() - ep.lastSeek > (ep.playing ? 40 : 0)) { ep.lastSeek = performance.now(); try { v.currentTime = want; } catch { } } }
+        else {
+          const m = sg.media || {};
+          if (m.out !== undefined && v.currentTime >= m.out - 0.02) { if (!v.paused) v.pause(); }
+          else if ((force || ep.cur !== key || Math.abs(v.currentTime - want) > 0.25) && !v.seeking) { try { v.currentTime = want; } catch { } }
+          if (v.paused && !(m.out !== undefined && v.currentTime >= m.out - 0.02)) v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+        }
+      }
+      if (ep.cur !== key) ep.img._tok = Math.random(); // a still that is still loading for the previous shot must not cover this clip
+      if (v.readyState >= 2) { ep.act = ep.vids.indexOf(v); showOnly(v); ep.vids.forEach(z => { if (z !== v && !z.paused) z.pause(); }); }
+      if (ep.cur !== key) { ep.cur = key; ep.cap.textContent = epCaption(p, sg, c); ep.warn.hidden = true; epApplyAudio(); epPreload(it); }
+      return;
+    }
+    if (ep.cur !== key) {
+      ep.cur = key; ep.vids.forEach(v => v.pause()); ep.cap.textContent = epCaption(p, sg, c);
+      const name = sg.media && (sg.media.name || (sg.media.path || '').split('/').pop()); const why = name && (ep.codec.get(name) || (sg.kind === 'video' ? 'it didn’t play in this browser (unsupported codec such as ProRes or 10-bit HEVC, or the file can’t be read yet)' : ''));
+      ep.warn.hidden = !why; if (why) ep.warn.textContent = '⚠ ' + name + ': ' + why + '. Run make-previews.command to make a playable preview copy.';
+      else if (sg.kind !== 'video' && isVidMedia(sg.media) && !local.kind) { ep.warn.hidden = false; ep.warn.textContent = 'Clip not reachable here — open the project folder (📂) to play clips. Showing the still.'; }
+      loadStill(ep.img, sg, p, () => { if (ep.cur === key) showOnly(null); }, () => { if (ep.cur === key) showOnly(ep.img); });
+      epPreload(it);
+    }
+  }
+  /** Load the next shot's clip into the spare video element so the cut is instant. */
+  async function epPreload(it) {
+    const items = ep.prog.items; const i = items.indexOf(it); const nx = items.slice(i + 1).find(x => x.block); if (!nx) return;
+    const segs = await epSegsFor(nx.block.page); const sg = segs && segs[0]; const src = sg && sg.kind === 'video' ? usable(sg.srcs || [])[0] : null; if (!src) return;
+    const spare = ep.vids[(ep.act + 1) % 2]; if (ep.vids.some(v => v._src === src)) return;
+    if (!spare.hidden) return; spare._src = src; spare._fresh = true; spare.src = src; spare._name = sg.media && (sg.media.name || (sg.media.path || '').split('/').pop());
+  }
+  function epCaption(p, sg, c) {
+    const L = lyr(p);
+    return 'Page ' + pageNumber(p.id) + (p.title ? ' · ' + p.title : '') + (sg && sg.isCut ? ' · cut ' + (c.k + 1) : '') + (sg && sg.speed && sg.speed !== 1 ? ' · ' + (sg.speed < 0 ? '◀ ' : '') + Math.round(Math.abs(sg.speed) * 100) + '%' : '') + (L ? '  —  ' + L : '');
+  }
+  function epWave(W, t0, pps) {
+    const H = 56; const cv = el('canvas', { class: 'ev-wavecv', width: Math.min(16000, Math.max(1, Math.round(W))), height: H, style: { width: W + 'px', height: H + 'px' } });
+    const pk = ep.song.peaks; if (!pk) return cv;
+    const g = cv.getContext('2d'); const sx = cv.width / W; g.fillStyle = '#7ee0a8';
+    for (let px = 0; px < cv.width; px++) {
+      const a = t0 + (px / sx) / pps, z = t0 + ((px + 1) / sx) / pps; const i0 = Math.max(0, Math.floor(a * pk.perSec)), i1 = Math.min(pk.peaks.length, Math.ceil(z * pk.perSec));
+      let mx = 0; for (let i = i0; i < i1; i++) if (pk.peaks[i] > mx) mx = pk.peaks[i];
+      const h = Math.max(mx > 0 ? 1 : 0, mx * (H - 6)); g.fillRect(px, (H - h) / 2, 1, h);
+    }
+    return cv;
+  }
+  /** Transport, monitor, song lane and playhead for renderEdit (re-created on every render; playback state lives in ep). */
+  function epBuild(tl, W, t0, pps, x, laneIds) {
+    epMixLoad(); epMonitor(); ep.prog = S.editProgram(doc, { hidden: prefs.hiddenLanes || [] }); ep.segs.clear(); ep.segGen = (ep.segGen || 0) + 1; ep.cur = ''; ep.geo = { t0, pps };
+    epLoadSong();
+    const m = ep.mix;
+    const transport = el('div', { class: 'ev-transport' },
+      el('button', { id: 'evPlay', class: 'primary', title: 'Play / pause the edit with the song (P)', onclick: epToggle }, ep.playing ? '⏸' : '▶'),
+      el('button', { id: 'evRew', title: 'Back to the start', onclick: () => epSeek(ep.prog.start < 1 ? 0 : ep.prog.start) }, '⏮'),
+      el('span', { id: 'evTime', class: 'ev-time' }, S.fmtTime(ep.t, true) + ' / ' + S.fmtTime(epEnd(), true)),
+      el('button', { id: 'evSongOnly', class: 'ev-tog' + (m.songOnly ? ' on' : ''), title: 'Master: only the song plays (all clip sound muted). Switch off to hear clip sound, then mute / solo lanes or clips.', onclick: () => { ep.mix.songOnly = !ep.mix.songOnly; epMixSave(); } }, m.songOnly ? '🔇 Clips muted · song only' : '🔊 Clip sound on'),
+      el('button', { id: 'evSongMute', class: 'ev-tog' + (m.song ? '' : ' off'), title: 'Song on / muted (it stays the clock)', onclick: () => { ep.mix.song = !ep.mix.song; epMixSave(); } }, m.song ? '🎵 Song on' : '🎵 Song muted'),
+      el('button', { id: 'evLoadSong', onclick: epSongDialog, title: 'Choose the song file' }, ep.song.src ? '🎵 ' + ep.song.name : '🎵 Load song…'),
+      epClipMix(),
+      Object.keys(m.lanes).length || Object.keys(m.clips).length ? el('button', { class: 'ev-clearmix', title: 'Clear all mutes and solos', onclick: () => { ep.mix.lanes = {}; ep.mix.clips = {}; epMixSave(); } }, 'clear M/S') : null);
+    const note = ep.song.note || (!ep.song.src ? 'No song loaded: the edit plays silent on its own clock. Load the song (🎵) or drop an audio file here.' : '');
+    const wave = el('div', { class: 'ev-wave' + (ep.song.src ? '' : ' empty'), style: { width: W + 'px' } }, epWave(W, t0, pps), note ? el('span', { class: 'ev-wavenote' }, note) : null);
+    wave.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault(); wave.classList.add('drop'); } });
+    wave.addEventListener('dragleave', () => wave.classList.remove('drop'));
+    wave.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return; e.preventDefault(); e.stopPropagation(); wave.classList.remove('drop'); epSaveSong(f); });
+    const ph = ep.ph = el('div', { class: 'ev-playhead' });
+    const laneMS = (id) => el('span', { class: 'ev-lms' }, el('button', { class: 'ev-ms', dataset: { kind: 'lane', id, v: 'mute' }, title: 'Mute this lane\u2019s clip sound', onclick: (e) => { e.stopPropagation(); epSetMix('lane', id, 'mute'); } }, 'M'), el('button', { class: 'ev-ms', dataset: { kind: 'lane', id, v: 'solo' }, title: 'Solo this lane (only soloed lanes are heard)', onclick: (e) => { e.stopPropagation(); epSetMix('lane', id, 'solo'); } }, 'S'));
+    return { transport, wave, ph, laneMS, songName: el('div', { class: 'ev-name ev-songname' }, '🎵 Song') };
+  }
+  function epClipMix() {
+    const sel = selected && ep.prog && ep.prog.timeline.blocks.find(b => b.id === selected);
+    const n = sel ? el('span', { class: 'ev-clipmix' }, 'Page ' + pageNumber(sel.id) + ' sound ', el('button', { class: 'ev-ms', dataset: { kind: 'clip', id: sel.id, v: 'mute' }, title: 'Mute this clip', onclick: () => epSetMix('clip', sel.id, 'mute') }, 'M'), el('button', { class: 'ev-ms', dataset: { kind: 'clip', id: sel.id, v: 'solo' }, title: 'Solo this clip (only soloed clips are heard)', onclick: () => epSetMix('clip', sel.id, 'solo') }, 'S')) : el('span', { class: 'muted ev-clipmix' }, 'Select a block for its M / S');
+    const old = document.querySelector('.ev-transport .ev-clipmix'); if (old) { old.replaceWith(n); epTransportState(); } return n;
+  }
+  /** Click / drag on the ruler, the song lane or empty lane space = seek / scrub. */
+  function epWireSeek(track, scroll) {
+    const tAt = (e) => { const r = track.getBoundingClientRect(); return ep.geo.t0 + (e.clientX - r.left) / ep.geo.pps; };
+    track.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.target.closest('.ev-block,button,.ev-gap span')) return;
+      if (!e.target.closest('.ev-ruler,.ev-wave,.ev-lane,.ev-playhead,.ev-gap')) return;
+      e.preventDefault(); const was = ep.playing; if (was) epPause(); epSeek(tAt(e)); track.setPointerCapture(e.pointerId);
+      const mv = (ev) => epSeek(tAt(ev)); const up = () => { track.removeEventListener('pointermove', mv); track.removeEventListener('pointerup', up); if (was) epPlay(); };
+      track.addEventListener('pointermove', mv); track.addEventListener('pointerup', up);
+    });
+  }
   function select(id) {
     selected = id; if (id) selectScene(null);
     $$('.card.sel').forEach(c => c.classList.remove('sel'));
     const c = id && document.querySelector('.card[data-id="' + CSS.escape(id) + '"]'); if (c) c.classList.add('sel');
     $$('.ev-block.sel').forEach(b => b.classList.remove('sel')); const eb = id && document.querySelector('.ev-block[data-id="' + CSS.escape(id) + '"]'); if (eb) eb.classList.add('sel');
+    if (view === 'edit' && ep.prog) epClipMix();
     renderEditor();
   }
   function renderEditor() {
@@ -1530,7 +1771,7 @@
   async function loadFolderHandle(dir) {
     toast('Reading folder…', 8000);
     const entries = []; await walk(dir, '', 0, entries);
-    resetLocal(); local.kind = 'fsa'; local.root = dir; local.name = dir.name; indexEntries(entries);
+    const wantJson = local.wantJson; resetLocal(); local.kind = 'fsa'; local.root = dir; local.name = dir.name; local.wantJson = wantJson; indexEntries(entries);
     idbSet('lastDir', dir).catch(() => {});
     await chooseJsonInFolder();
   }
@@ -1548,8 +1789,9 @@
   }
   async function chooseJsonInFolder() {
     const jsons = Array.from(local.files.values()).filter(e => SB_FILE.test(e.path)).sort((a, b) => a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
-    let pick = jsons[0];
-    if (jsons.length > 1) {
+    let pick = jsons[0]; const wanted = local.wantJson && jsons.find(j => j.name === local.wantJson); local.wantJson = '';
+    if (wanted) pick = wanted;
+    else if (jsons.length > 1) {
       pick = await new Promise(res => modal(el('div', null, el('h2', null, 'Which storyboard?'), el('p', { class: 'muted' }, 'This folder has several storyboard files.'),
         jsons.map(j => el('div', { style: { margin: '6px 0' } }, el('button', { class: 'pick-json', style: { width: '100%', textAlign: 'left' }, onclick: () => { closeModal(); res(j); } }, '📄 ' + j.path))),
         el('div', { class: 'modal-actions' }, el('button', { onclick: () => { closeModal(); res(null); } }, 'Cancel')))));
@@ -1593,7 +1835,7 @@
         const [h] = await window.showOpenFilePicker({ id: 'storyboard', types: [{ description: 'Storyboard', accept: { 'application/json': ['.json'] } }] });
         const f = await h.getFile(); const txt = await f.text(); const d = safeJson(txt); if (!d) return toast('Not valid JSON');
         resetLocal(); local.jsonHandle = h; local.jsonName = f.name; local.jsonMtime = f.lastModified; local.jsonRev = revOf(d); local.jsonText = txt; local.single = true;
-        setDoc(d); toast('Opened ' + f.name + '. Open the whole folder to see local images and videos.', 4000);
+        setDoc(d); fileOnlyNotice();
       } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
       return;
     }
@@ -1833,7 +2075,7 @@
 <li><b>Role</b> (insert / flash-forward / flashback) is shown on cards; ⚠ in the header lists song-time gaps between linear pages; ⏱ means the video prompt length differs from the page.</li>
 <li><b>☰ Cast manager</b>: characters, locked canon, reference sets and looks. <b>☰ Export</b> CSV / EDL for DaVinci Resolve.</li>
 <li>Every save raises <code>revision</code>; if the file changed since you opened it, you are asked before anything is overwritten.</li>
-<li><b>DaVinci Resolve (v4.2):</b> ☰ → 🎞 DaVinci Resolve timelines exports Edit, each storyline, Board, each character and Extras as separate timelines (video clips only). In Resolve: File › Import › Timeline…, select all the .otio files. See HOW TO IMPORT.txt in the zip.</li><li><b>Video previews (v4.1):</b> with the project folder open, clips play in the big preview and on the cards (hover, or 🎞 clips: loop). Online with Drive links, press <b>▶ Play here</b> (or V) in the big preview to play the clip with Google's Drive player: it works when this browser is signed in to Google with access to the file, or when the file is shared “Anyone with the link”. Optional: run <code>make-previews.command</code> once for small, smooth preview clips (_previews folders).</li>
+<li><b>Edit tab with the song (v4.3):</b> ▶ (or P) plays the edit in sync with the song: the song is the clock, the monitor shows the clip, still or black (song gap). Click the ruler, the song lane or a block to jump; drag to scrub. 🎵 loads the song (or drop an audio file on the song lane). Clip sound starts muted (🔇 song only); switch it on and use M / S per lane or per selected block.</li><li><b>Clips not playing?</b> If the top bar shows 📄 (only the file is open), use “Open its folder”: the app needs the folder to reach the clips.</li><li><b>DaVinci Resolve (v4.2):</b> ☰ → 🎞 DaVinci Resolve timelines exports Edit, each storyline, Board, each character and Extras as separate timelines (video clips only). In Resolve: File › Import › Timeline…, select all the .otio files. See HOW TO IMPORT.txt in the zip.</li><li><b>Video previews (v4.1):</b> with the project folder open, clips play in the big preview and on the cards (hover, or 🎞 clips: loop). Online with Drive links, press <b>▶ Play here</b> (or V) in the big preview to play the clip with Google's Drive player: it works when this browser is signed in to Google with access to the file, or when the file is shared “Anyone with the link”. Optional: run <code>make-previews.command</code> once for small, smooth preview clips (_previews folders).</li>
 <li><b>Online without the folder:</b> images show as Drive thumbnails if you're signed in to Google in this browser.</li>
 </ul>
 <p>Shortcuts: <code>Ctrl/Cmd+Z</code> undo · <code>Ctrl/Cmd+Shift+Z</code> redo · <code>Ctrl/Cmd+S</code> save · <code>Space</code> big preview of the selected page or scene (Space / Esc / click outside closes; ←/→ pages, ↑/↓ scenes, Enter opens the drawer, V plays a Drive clip here; also the 👁 button on a card, swipe on touch) · <code>P</code> play (Space plays/pauses only inside Play mode) · <code>N</code> new page after the selected one · <code>←/→</code> previous/next page · paste an image or Drive link to put it on the selected page.</p>` }),
@@ -2122,7 +2364,7 @@
         const tryClip = () => {
           if (!mine()) return; if (si >= srcs.length) { showDrive(true); vid.removeAttribute('src'); return still(); }
           const src = srcs[si++];
-          vid.onerror = () => { if (!mine()) return; markBad(src); tryClip(); };
+          vid.onerror = () => { if (!mine()) return; markBad(src); codecWarn(sg.media, vid.error && vid.error.code); tryClip(); };
           vid.onloadeddata = () => { if (!mine()) return; markGood(src); shown('vid'); vid.hidden = false; };
           vid.onloadedmetadata = () => fit(vid.videoWidth, vid.videoHeight);
           if (vid.getAttribute('src') !== src) { vid.src = src; vid.addEventListener('loadedmetadata', seekPlay, { once: true }); }
@@ -2238,7 +2480,7 @@
     if (mod && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); return redo(); }
     if (typing || mod || e.altKey || !doc || !$('#modal').hidden) return;
     if (e.key === ' ') { e.preventDefault(); const t = qlTarget(); if (t) qlOpen(t); else toast('Click a page (or a scene header) first, then press Space for a big preview.'); return; }
-    if (e.key === 'p' || e.key === 'P') play(selected);
+    if (e.key === 'p' || e.key === 'P') { if (view === 'edit') epToggle(); else play(selected); }
     else if ((e.key === 'n' || e.key === 'N') && doc.scenes.length) { e.preventDefault(); const f = selected && findPage(selected); addPage(f ? f.scene.id : doc.scenes[doc.scenes.length - 1].id, f ? selected : null); }
     else if (e.key === 'Escape') select(null);
     else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && selected) { const ps = allPages(); const i = ps.findIndex(p => p.id === selected) + (e.key === 'ArrowRight' ? 1 : -1); if (ps[i]) select(ps[i].id); }
@@ -2256,6 +2498,36 @@
   document.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
   window.addEventListener('beforeunload', (e) => { if (dirty && !((local.kind === 'fsa' || local.single) && prefs.autosave)) { e.preventDefault(); e.returnValue = ''; } });
 
+
+  // ---------- v4.3: notices (single-file open, updates) ----------
+  const LIVE_URL = 'https://kmhkasper-boop.github.io/storyboard-studio/';
+  function notice(id, text, buttons, cls) {
+    let box = $('#notices'); if (!box) { box = el('div', { id: 'notices' }); document.body.prepend(box); }
+    const old = document.getElementById('nt-' + id); if (old) old.remove(); if (!text) return null;
+    const n = el('div', { class: 'notice ' + (cls || ''), id: 'nt-' + id }, el('span', { class: 'nt-text', html: text }), ...(buttons || []).map(b => el('button', { class: b.cls || '', onclick: b.onclick }, b.label)), el('button', { class: 'nt-x', title: 'Hide', onclick: () => n.remove() }, '✕'));
+    box.append(n); return n;
+  }
+  /** Lucas's "videos don't play" (Nov 2026): Bleeding Page was opened with "Open storyboard file", which gives the app the JSON
+   *  but no access to the folder with the clips. Say so as long as it lasts, with a one-click fix that opens the picker in that folder. */
+  function fileOnlyNotice() {
+    if (!local.single || !doc) return notice('single', '');
+    const clips = allPages().filter(p => isVidMedia(p.video) && p.video.path).length;
+    notice('single', '📄 Only the file <b>' + esc(local.jsonName) + '</b> is open, so the app can\u2019t reach its folder' + (clips ? ': <b>' + clips + ' clips won\u2019t play</b>' : '') + ' (Drive thumbnails only).',
+      [{ label: '📂 Open its folder (clips play)', cls: 'primary nt-openfolder', onclick: () => openFolderOfFile() }], 'warn');
+  }
+  async function openFolderOfFile() {
+    const want = local.jsonName, h = local.jsonHandle; let dir;
+    try { dir = await window.showDirectoryPicker({ id: 'storyboard', mode: 'readwrite', startIn: h || 'documents' }); } catch (e) { if (e.name !== 'AbortError') toast('Could not open folder: ' + e.message); return; }
+    if (dirty && !(await confirmDiscard())) return;
+    local.wantJson = want; await loadFolderHandle(dir); notice('single', '');
+  }
+  async function checkForUpdate() {
+    let v = null; try { const r = await fetch(LIVE_URL + 'version.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) v = (await r.json()).version; } catch { return; }
+    if (!v || !S.versionNewer(v, APP_VERSION)) return notice('update', '');
+    if (location.protocol === 'file:') notice('update', '⬆ This offline copy is <b>' + APP_VERSION + '</b>; <b>' + esc(v) + '</b> is out. Use the online app, or download the new kit from the Storyboard Studio folder on Drive and delete this old copy.', [{ label: 'Open online app', cls: 'primary', onclick: () => window.open(LIVE_URL, '_blank') }]);
+    else notice('update', '⬆ Storyboard Studio <b>' + esc(v) + '</b> is ready (you have ' + APP_VERSION + ').', [{ label: 'Reload now', cls: 'primary nt-reload', onclick: () => reloadForUpdate() }]);
+  }
+  async function reloadForUpdate() { if (dirty && doc) { try { await save(); } catch { } } try { const r = await navigator.serviceWorker?.getRegistration(); await r?.update(); } catch { } location.reload(); }
   // ---------- init ----------
   async function init() {
     $('#fsaNote').innerHTML = HAS_FSA
@@ -2274,8 +2546,14 @@
     const auto = safeJson(localStorage.getItem(LS_AUTOSAVE));
     if (auto && auto.doc) $('.empty-actions').append(el('button', { class: 'restore', onclick: () => { setDoc(auto.doc); dirty = true; updateSaveState(); toast('Restored the copy autosaved in this browser (' + new Date(auto.at).toLocaleString() + '). Save to keep it.', 5000); } }, '⟲ Restore browser copy (' + new Date(auto.at).toLocaleDateString() + ')'));
   }
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  $('#appVer').textContent = APP_VERSION; document.title = 'Storyboard Studio ' + APP_VERSION;
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => { r.update().catch(() => {}); setInterval(() => r.update().catch(() => {}), 30 * 60 * 1000); }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) checkForUpdate(); });
+  }
+  if (location.protocol === 'https:' || location.protocol === 'file:') { setTimeout(checkForUpdate, 4000); setInterval(checkForUpdate, 30 * 60 * 1000); document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); }); }
   // test/automation hook
-  window.__sb = { render: () => render(), APP_VERSION, thumbCache, badUrls, qlToggleEmbed, qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, exportResolveDialog, resolveDurations, lastResolve: null, get drawer() { return drawer; } };
+  window.__sb = { render: () => render(), APP_VERSION, thumbCache, badUrls, qlToggleEmbed, qlOpen, qlClose, importTextDialog, renderEdit: () => renderEdit(), get ql() { return ql; }, get selScene() { return selScene; }, importEditDialog, variantManager, applyVariantUI, setActiveSceneUI, setActivePageUI, get doc() { return doc; }, get local() { return local; }, get dirty() { return dirty; }, get selected() { return selected; }, get undoDepth() { return undoStack.length; }, setDoc, select, save, undo, redo, play, attachFiles, loadFolderHandle, movePage, addPage, checkExternal, onDirInput, get lastCopied() { return lastCopied; }, get pl() { return pl; }, castManager, pickTake, exportEdit, exportResolveDialog, resolveDurations, lastResolve: null, ep, epFrame, epPlay, epPause, epSeek, epSaveSong, epSetMix, checkForUpdate, openFolderOfFile, fileOnlyNotice, get drawer() { return drawer; } };
   init();
 })();

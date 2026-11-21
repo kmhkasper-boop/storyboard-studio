@@ -1232,6 +1232,63 @@
     return { blocks, gaps, switches, lanes, start, end };
   }
   function allPages(doc) { const r = []; for (const s of doc.scenes) for (const p of s.pages) r.push(p); return r; }
+  // ---------- v4.3: Edit-tab playback (song as master clock) and the clip-audio mixer ----------
+  /** What is on screen at each song time in the Edit tab: the active variant's blocks flattened to one picture track.
+   *  Inserts / flash-forwards / flashbacks (any non-linear role) play over linear pages; among equals the later start wins.
+   *  opts.hidden: storyline ids whose lanes are hidden (left out of the picture). Returns { items:[{from,to,block|null}], start, end }
+   *  where block:null is a song gap (black). */
+  function editProgram(doc, opts) {
+    opts = opts || {}; const hidden = opts.hidden instanceof Set ? opts.hidden : new Set(opts.hidden || []);
+    const tl = editTimeline(doc); const blocks = tl.blocks.filter(b => !hidden.has(b.storyline) && b.end > b.start);
+    const rank = (b) => ((b.page.role || 'linear') === 'linear' ? 0 : 1);
+    const cuts = [...new Set(blocks.flatMap(b => [b.start, b.end]))].sort((a, b) => a - b); const raw = [];
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i], z = cuts[i + 1]; if (z - a < 1e-6) continue; const mid = (a + z) / 2;
+      let top = null; for (const b of blocks) if (b.start <= mid && b.end > mid && (!top || rank(b) > rank(top) || (rank(b) === rank(top) && (b.start > top.start || (b.start === top.start && b.order > top.order))))) top = b;
+      raw.push({ from: a, to: z, block: top });
+    }
+    const items = []; for (const it of raw) { const last = items[items.length - 1]; if (last && last.block === it.block && Math.abs(last.to - it.from) < 1e-6) last.to = it.to; else items.push(Object.assign({}, it)); }
+    return { items, start: tl.start, end: tl.end, timeline: tl };
+  }
+  /** Program item at song time t (binary search); null before the first / after the last item. */
+  function programAt(items, t) {
+    let lo = 0, hi = items.length - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; const it = items[m]; if (t < it.from) hi = m - 1; else if (t >= it.to) lo = m + 1; else return it; }
+    return null;
+  }
+  /** Inside a page of length d whose cuts have the given durations (they loop to fill the page), which cut plays at page time x. */
+  function cutAt(durs, d, x) {
+    if (!durs.length) return { k: 0, x };
+    const total = durs.reduce((a, b) => a + b, 0) || 1; let y = durs.length > 1 ? x % total : x; let k = 0;
+    while (k < durs.length - 1 && y >= durs[k]) { y -= durs[k]; k++; }
+    return { k, x: y, loop: durs.length > 1 ? Math.floor(x / total) : 0 };
+  }
+  /** Source time in the clip for page time x (speed, in/out, reverse) — the same rule as Play and the preview. */
+  function clipTime(m, speed, x, segDur, fileDur) {
+    m = m || {}; const full = isFinite(fileDur) ? fileDur : Infinity; const a = m.in !== undefined ? m.in : 0; const b = m.out !== undefined ? Math.min(m.out, full) : full;
+    if (speed < 0) return Math.max(a, (isFinite(b) ? b : a + segDur * Math.abs(speed)) - x * Math.abs(speed));
+    return Math.min(isFinite(b) ? b : Infinity, a + x * speed);
+  }
+  /** Mixer for clip sound in the Edit tab. Not part of the board file: saved per board in the browser.
+   *  { songOnly: true (default: clips muted, only the song), song: true, lanes: {id:'mute'|'solo'}, clips: {pageId:'mute'|'solo'} } */
+  function defaultMix() { return { songOnly: true, song: true, lanes: {}, clips: {} }; }
+  function normMix(m) { m = m && typeof m === 'object' ? m : {}; const d = defaultMix(); const pick = (o) => { const r = {}; for (const [k, v] of Object.entries(o && typeof o === 'object' ? o : {})) if (v === 'mute' || v === 'solo') r[k] = v; return r; }; return { songOnly: m.songOnly !== undefined ? !!m.songOnly : d.songOnly, song: m.song !== undefined ? !!m.song : d.song, lanes: pick(m.lanes), clips: pick(m.clips) }; }
+  /** Is a clip's own sound heard? Song-only master wins; then lane mute/solo; then clip mute/solo. */
+  function clipAudible(mix, pageId, laneId) {
+    mix = normMix(mix); if (mix.songOnly) return false;
+    const ls = Object.values(mix.lanes).includes('solo'), cs = Object.values(mix.clips).includes('solo');
+    if (mix.lanes[laneId] === 'mute' || (ls && mix.lanes[laneId] !== 'solo')) return false;
+    if (mix.clips[pageId] === 'mute' || (cs && mix.clips[pageId] !== 'solo')) return false;
+    return true;
+  }
+  /** Peak envelope for a waveform: max |sample| per bucket over all channels (Float32Arrays), perSec buckets per second. */
+  function audioPeaks(channels, sampleRate, perSec) {
+    perSec = perSec || 50; const len = channels.length ? channels[0].length : 0; const step = Math.max(1, Math.round(sampleRate / perSec)); const n = Math.ceil(len / step); const out = new Float32Array(n);
+    for (const ch of channels) for (let i = 0; i < n; i++) { let mx = out[i]; const e = Math.min(len, (i + 1) * step); for (let j = i * step; j < e; j++) { const v = ch[j] < 0 ? -ch[j] : ch[j]; if (v > mx) mx = v; } out[i] = mx; }
+    return { peaks: out, perSec: sampleRate / step, seconds: len / sampleRate };
+  }
+  /** "v4.3" > "v4.2.1"? (numeric compare, missing parts = 0) */
+  function versionNewer(a, b) { const p = (v) => String(v || '').replace(/^v/i, '').split('.').map(x => parseInt(x, 10) || 0); const x = p(a), y = p(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; }
   // ---------- v4.2: DaVinci Resolve export (OTIO per timeline + FCPXML 1.10 fallback, zipped) ----------
   const VIDEO_RE = /\.(mp4|m4v|mov|webm|mxf|avi|mkv)$/i;
   const AUDIO_RE = /\.(mp3|wav|aiff?|m4a|aac|flac|ogg)$/i;
@@ -1583,6 +1640,6 @@
     return out;
   }
 
-  const api = { fpsInfo, mediaFileUrl, pageVideoSegs, resolveTimelines, toOTIO, toFCPXML, resolvePackage, zipStore, crc32, nearestColor, MARKER_COLORS, CLIP_COLORS, isVideoMedia, STORY_COLORS, normStoryline, storylineList, storylineOf, storylineById, storyPages, setStoryOrder, setPageStoryline, addStoryline, removeStoryline, usageOf, unusedPages, editTimeline, walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
+  const api = { editProgram, programAt, cutAt, clipTime, defaultMix, normMix, clipAudible, audioPeaks, versionNewer, fpsInfo, mediaFileUrl, pageVideoSegs, resolveTimelines, toOTIO, toFCPXML, resolvePackage, zipStore, crc32, nearestColor, MARKER_COLORS, CLIP_COLORS, isVideoMedia, STORY_COLORS, normStoryline, storylineList, storylineOf, storylineById, storyPages, setStoryOrder, setPageStoryline, addStoryline, removeStoryline, usageOf, unusedPages, editTimeline, walkDir, folderMediaIndex, MEDIA_RE, resolveSpeed, cutsOverrun, trimCutsToFit, stretchPageToCuts, clipGenSeconds, cutWarnings, boardMedia, matchBoard, regroup, activeDoc, activePages, pageLabels, sceneItems, pageItems, setActiveScene, setActivePage, addSceneAlternative, addPageAlternative, removePage, removeScene, moveSceneItem, currentChoices, applyVariant, withVariant, variantMatches, toCSVAllVariants, parseTimeAny, parseCMX3600, parseEditCSV, parseEditList, matchClip, planEditImport, applyEditPlan, lyricsFor, effectiveLook, canonFacts, canonConflicts, promptBlock, usedIn, editRows, toCSV, toEDLText, toCMX3600, tc, TOOLS, toolLabel, toolId, LOOK_FIELDS, normStatus, normCastRefs, castRefOut, normTake, normGen, normCharacter, parseCastList, commentThreads, fmtStamp, ROLES, ROLE_IDS, RETIMES, RETIME_IDS, speedOf, rangeLen, promptSeconds, durationWarning, timeline, parseUpdated, isoLocal, versionLabel, normCut, mediaLine, parseMediaLine, parseRole, parseRetime, FORMAT, VERSION, STATUSES, STATUS_IDS, PAGE_FIELDS, SCENE_COLORS, uid, parseTime, fmtTime, pageDuration, normMedia, normPage, normScene, normalizeDoc, serialize, parseDriveId, slug, matchNumber, parseMirrageText, toMarkdown, allPages, pad2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.SB = api;
 })(typeof self !== 'undefined' ? self : this);

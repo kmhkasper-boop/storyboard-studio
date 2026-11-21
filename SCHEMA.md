@@ -6,6 +6,8 @@ Storyboard Studio keeps a storyboard in **one plain JSON file** inside the Drive
 - Location: the video's own folder. Media paths are relative to **the folder that holds the storyboard file**.
 - Encoding: UTF-8 JSON, 2-space indent. Upload with MIME type `application/json` and **do not convert** it to a Google Doc.
 
+> **v4.3 (app update, still `"version": 4`, no new fields):** the Edit tab plays the edit with the song (`audio`) as its clock, showing a waveform, a playhead and mute/solo per lane and per clip. The mixer state and a song file Lucas picks in the app are kept in his browser, not in the file. Set `audio.path` to the song in the project folder if you know it; its 0:00 must be song time 0:00 (the time base of `start`/`end`).
+>
 > **v4.2 (app update, still `"version": 4`, no new fields):** ☰ → **🎞 DaVinci Resolve timelines** exports Edit / Story per storyline / Board / Character / Extras timelines as OTIO + FCPXML 1.10 (video only). It reads `video`, `takes`, `cuts`, `speed`, `start`/`end`, `storyline`, `storyOrder`, `role`, `characters`, `variants`, `status`, `pool`, `lyrics` and the prompts. Nothing new to write. Keep `path` set on clips: clips with only a `driveId` must be relinked by hand in Resolve.
 >
 > **v4.1 (app update, still `"version": 4`, no new fields):** clips play in the big preview and on the cards, and the Drive player can play Drive-only clips in the preview. Nothing changes in the file. One folder convention is new and optional: **preview clips** in `_previews/` folders (see Media object). Don't link `_previews` files in the storyboard; the app finds them by name.
